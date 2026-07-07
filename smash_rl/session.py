@@ -1,6 +1,9 @@
 from __future__ import annotations
+import errno
+import fcntl
 import os
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -11,11 +14,13 @@ import melee
 from random import Random
 import psutil
 import threading
+import numpy as np
 
-
+# per hard reset all'inizio del training. I processi dolphin hanno la tendenza a rimanere appesi
 def kill_dolphin() -> None:
     """
     Uccide eventuali processi Dolphin appesi, che altrimenti tengono occupata la porta dello spectator server (51441).
+    ATTENZIONE: uccide TUTTI i dolphin-emu della macchina, anche quelli di altri run in corso.
     """
     subprocess.run(
         ["pkill", "-f", "dolphin-emu"],
@@ -32,13 +37,13 @@ class MeleeConfig:
 
     Le tre risorse che DEVONO essere uniche per istanza (per la parallelizzazione)
     sono: la porta Slippi, la home di Dolphin (isolata via tmp_home_directory) e
-    il display virtuale.
+    il display virtuale (pyvirtualdisplay ne assegna uno libero per processo).
     """
 
     dolphin_exe: Path           # path diretto a .../usr/bin/dolphin-emu. NON AppImage o directory di installazione.
     iso: Path                   # immagine del gioco .iso (NON .rvz o .ciso)
     replay_dir: Path            # directory dove salvare i replay
-    display_size: tuple = (640, 480)
+    display_size: tuple = (640, 480)    # dimensioni del display virtuale (Xvfb). Più grande = più lento. Più piccolo = più probabile che Dolphin crashi.
     use_exi_inputs: bool = True # True per addestramento. EXI supporta aumento della velocità
     enable_ffw: bool = True     # True per addestramento. FFWD abilita aumento della velocità
     headless: bool = True       # True = crea un Xvfb; False = usa il DISPLAY esistente
@@ -48,11 +53,12 @@ class MeleeConfig:
     instance_id: int = 0        # solo per logging/debug
     use_instant_restart: bool = True  # prova il restart veloce; fallback = navigazione menu
 
+    # -- opzioni di gioco (meglio non toccare, sono così perché funzionano) --
     infinite_time: bool = False  # True = tempo infinito. False = tempo normale di 8 minuti
     instant_match_restart: bool = False  # True = restart istantaneo. False = restart lento via menu. Messo a False perché è implementato male e crea problemi con la selezione di personaggi e scenari
 
     @classmethod
-    def from_env(cls, dotenv_path: Optional[str] = None, **overrides) -> "MeleeConfig":
+    def from_env(cls, dotenv_path: Optional[str] = None, save_name: str = "default", **overrides) -> "MeleeConfig":
         """Costruisce la config leggendo le variabili dal .env.
 
         Variabili attese:
@@ -65,40 +71,40 @@ class MeleeConfig:
 
         dolphin_exe = Path(os.environ["DOLPHIN_EXI_DIR"])
         iso = Path(os.environ["SMBM_ISO_PATH"])
-        # get() ritorna None se non settata: Path(None) esplode -> forniamo un default.
-        replay_dir = Path(os.environ.get("REPLAY_DIR", "/home/luca/melee/replays"))
+        replay_dir = Path(os.environ["REPLAY_DIR"]) / save_name
+
 
         cfg = cls(dolphin_exe=dolphin_exe, iso=iso, replay_dir=replay_dir, **overrides)
         cfg.validate()
 
         return cfg
 
-    '''@classmethod
-    def for_instance(self, i: int) -> "MeleeConfig":
-        """
-        Ritorna una COPIA della config specializzata per l'istanza i:
-        porta = 51441 + i, instance_id = i. La replay_dir resta condivisa
-        (i replay hanno nomi univoci), la home di Dolphin è isolata a runtime
-        via tmp_home_directory=True nel Console.
-        """
-        return replace(self, slippi_port=51441 + i, instance_id=i)'''
-    
     @classmethod
-    def for_instance(cls, i):
-        base = cls.from_env()          # o cls() se ha default sensati
-        return replace(base, slippi_port=51441 + i, instance_id=i, replay_dir=base.replay_dir / f"instance_{i}")
+    def for_instance(cls, i: int, save_name: str = "default") -> "MeleeConfig":
+        """
+        Ritorna una config per l'istanza i: porta Slippi unica (51441 + i) e replay_dir dedicata
+        """
+        base = cls.from_env(save_name=save_name)   # per poter usare le variabili d'ambiente e i path relativi partiamo da una config base. Poi la modifichiamo per l'istanza i.
+        cfg = replace(base, slippi_port=51441 + i, instance_id=i,
+                      replay_dir=base.replay_dir / f"instance_{i}")
+        cfg.replay_dir.mkdir(parents=True, exist_ok=True)
+        return cfg
 
     def validate(self) -> None:
-        """Verifica che i path esistano. Lancia FileNotFoundError se qualcosa non va."""
+        """Verifica che la config abbia senso e che le risorse esistano. Lancia FileNotFoundError se qualcosa non va."""
+
         if not self.dolphin_exe.is_file():
             raise FileNotFoundError(f"eseguibile Dolphin non trovato: {self.dolphin_exe}")
+        
         if not self.iso.is_file():
             raise FileNotFoundError(f"ISO non trovata: {self.iso}")
+        
         if self.iso.suffix.lower() == ".rvz":
             print(
                 "[melee_env] ATTENZIONE: stai usando un .rvz. Se il boot fallisce, "
                 "converti in .iso con dolphin-tool convert -f iso."
             )
+
         self.replay_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -125,15 +131,22 @@ def test_player_specs() -> list:
 class MeleeSession:
     """
     Gestisce una sessione di gioco Melee con Dolphin/Slippi, con due controller (porte) e un display virtuale opzionale.
+
+    Supporta multi-processing: ogni istanza ha una config unica che dovrebbe evitare conflitti. Un watchdog verificia l'istanza sia ancora viva, e la ricrea in caso di crash.
+    Se il watchdog rileva un timeout, uccide Dolphin e lancia Timeout. Se qualcosa va storto, lancia un'eccezione invece di restare appeso.
     """
+
+    # timeout di default per le fasi di boot
+    connect_timeout_s = 30.0        # attesa dello spectator server di Dolphin
+    controller_timeout_s = 30.0     # attesa dell'apertura delle pipe da parte di Dolphin
 
     def __init__(self,
         config: Optional[MeleeConfig] = None,
         players: Optional[Sequence[PlayerSpec]] = None,
         console: Optional[melee.Console] = None):
 
-        self.config = config or MeleeConfig.from_env()
-        self.players = players or test_player_specs()
+        self.config = config or MeleeConfig.from_env()  # config passata o defalt dal .env
+        self.players = players or test_player_specs()   # default = due CPU livello 9 (partita autonoma)
 
         self._external_console = console    # se esiste, non creiamo una nuova console ma usiamo quello esterno. Utile per il multi-istanza.
         self.console: Optional[melee.Console] = console
@@ -145,23 +158,25 @@ class MeleeSession:
         self._in_game_frames = 0
 
         self.old_stocks = [4 for _ in self.players]  # per rilevare il match_over
-    
+
+    def _log(self, msg: str) -> None:       # logga lo stato dell'istanza. Utile con più processi perché i log sono scritti su file, separati per istanza.
+        print(f"[melee_env inst={self.config.instance_id}] {msg}", flush=True)
 
     # -- costruzione risorse --
 
-    def _ensure_display(self) -> None:
+    def _ensure_display(self) -> None:      # basta che il display virtuale esista. Può essere creato una singola volta e non dovrebbe essere interessato ai crash del resto del codice
         """Crea il display virtuale una sola volta; sopravvive agli hard reset."""
 
         if not self.config.headless:
             self.display = None
             return
-        
+
         if self.display is None:
             self.display = Display(visible=0, size=self.config.display_size)
             self.display.start()
 
     def _build_console(self) -> None:
-        """(Ri)crea l'oggetto Console e i controller. Non fa boot: quello è run()."""
+        """(Ri)crea l'oggetto Console e i controller"""
 
         if self._external_console is not None:  # se ci hanno passato un console esterno, lo usiamo senza crearne uno nuovo
             self.console = self._external_console
@@ -183,35 +198,132 @@ class MeleeSession:
             melee.Controller(self.console, port + 1) for port in range(len(self.players))
         ]
 
+    def _dolphin_alive(self) -> bool:       # verifica il processo sia ancora attivo. Se il processo è morto, la pipe del controller non si sblocca e il worker resta appeso per sempre.
+        proc = self.console._process if self.console is not None else None
+        return proc is not None and proc.poll() is None
+
+    def _kill_stale_dolphins(self) -> None:
+        """
+        Si assicura non rimangano in vita processi Dolphin dopo un crash/reset.
+        """
+        tmp_root = tempfile.gettempdir()
+        port_marker = f"spectatorlocalport = {self.config.slippi_port}"
+        for p in psutil.process_iter(["name", "cmdline"]):
+            try:
+                if "dolphin-emu" not in (p.info["name"] or ""):
+                    continue
+                cmd = p.info["cmdline"] or []
+                if "-u" not in cmd:
+                    continue
+                home = cmd[cmd.index("-u") + 1]
+                if not home.startswith(os.path.join(tmp_root, "libmelee_")):
+                    continue  # non è un dolphin lanciato da libmelee: non lo tocchiamo
+                ini = Path(home) / "Config" / "Dolphin.ini"
+                if not ini.is_file():
+                    continue
+                # il nome della chiave varia tra build (SpectatorLocalPort /
+                # SlippiSpectatorLocalPort): il match sul suffisso copre entrambe
+                if port_marker in ini.read_text(errors="ignore").lower():
+                    self._log(f"ucciso dolphin stantio pid={p.pid} sulla porta {self.config.slippi_port}")
+                    p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
+                continue
+
+    def _connect_controller_safe(self, controller, timeout: Optional[float] = None) -> None:
+        """
+        Connessione di un controller, non bloccante con open().
+        """
+        timeout = timeout or self.controller_timeout_s
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fd = os.open(controller.pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as e:
+                if e.errno != errno.ENXIO:  # ENXIO = nessun lettore sulla FIFO: Dolphin non è ancora pronto
+                    raise
+            if not self._dolphin_alive():
+                raise RuntimeError(
+                    f"Dolphin (porta {self.config.slippi_port}) è morto prima di aprire "
+                    f"la pipe del controller {controller.port}"
+                )
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"Dolphin non ha aperto la pipe del controller {controller.port} "
+                    f"entro {timeout}s"
+                )
+            time.sleep(0.1)
+
+        # ripristina la modalità bloccante: la scrittura deve avere la stessa semantica di open(path, "w")
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+
+        # replica ciò che fa Controller.connect() su Linux
+        controller.pipe = os.fdopen(fd, "w")
+        self.console.controllers.append(controller)
+
+    def _safe_stop_console(self) -> None:
+        """
+        Ferma la console in maniera non bloccante, evitando close() che può restare appeso se Dolphin è morto. Chiude la pipe del controller e uccide Dolphin.
+        """
+        if self.console is None:
+            return
+
+        self.force_kill_dolphin()
+
+        slippstream = self.console._slippstream if self.console is not None else None
+        buf = slippstream._buffer if slippstream is not None else None
+        if buf is not None:
+            deadline = time.time() + 10.0
+            try:
+                while time.time() < deadline and buf.poll(0.2):
+                    buf.recv_bytes()
+            except (EOFError, OSError):
+                pass  # pipe chiusa dal figlio: va benissimo
+
+        try:
+            self.console.stop()
+        except Exception as e:
+            self._log(f"errore durante lo stop della console: {e}")
+        self.console = None
+
     # -- gestione della sessione --
 
     def hard_reset(self):
         """
         Riavvia la sessione di gioco, uccidendo eventuali processi Dolphin appesi e ricreando il display virtuale e la console.
+        Ogni fase è fail-fast: in caso di problemi lancia un'eccezione invece di bloccarsi.
         """
 
         if self.console is not None and self._external_console is None:
-            try:
-                self.console.stop()
-            except Exception as e:
-                print(f"[melee_env] errore stop console pre-hard_reset: {e}")
-            self.console = None
+            self._safe_stop_console()
+
+        if self._external_console is None:
+            self._kill_stale_dolphins()   # la porta slippi deve essere libera prima del boot
 
         self._ensure_display()
         self._build_console()
 
         self.console.run(iso_path=str(self.config.iso))
-        assert self.console.connect(), "connessione a Dolphin fallita"
+        self._log(f"dolphin avviato (porta {self.config.slippi_port})")
+
+        # console.connect() prova per 10s e ritorna False in caso di fallimento:
+        if not self.console.connect():
+            alive = "vivo" if self._dolphin_alive() else "MORTO"
+            raise RuntimeError(
+                f"connessione a Dolphin fallita (porta {self.config.slippi_port}, processo {alive})"
+            )
 
         for controller in self.controllers:
-            #print(f"[melee_env] Collegamento controller porta {controller.port}...")
-            controller.connect()
+            self._connect_controller_safe(controller)
+        self._log("console e controller connessi")
 
         self._gamestate = None
         self._in_game_frames = 0
         return self
 
-    def soft_reset(self, timeout=None):
+    def soft_reset(self, timeout: Optional[float] = 120.0):
+        """Aspetta che la partita venga resettata (stock a 4) e ritorna il gamestate in game. Timeout di default = 120s."""
         start = time.time()
         while True:
 
@@ -225,17 +337,19 @@ class MeleeSession:
             self._gamestate = gs
             if gs.menu_state == melee.Menu.IN_GAME:
                 break
+
         self._in_game_frames = 0
         return gs
 
     def advance_to_in_game(self,
         player_specs: Optional[Sequence[PlayerSpec]] = None,
         stage: Optional[melee.Stage] = None,
-        timeout: Optional[float] = None,
+        timeout: Optional[float] = 120.0,
         dbg: bool = False):
         """
         Avanza la partita fino a entrare in game, navigando i menu per selezionare i giocatori e lo stage.
-        Ritorna il gamestate finale (in game). Se timeout è specificato, lancia TimeoutError se non si entra in game entro il tempo specificato.
+        Ritorna il gamestate finale (in game). Il timeout di default è 120s: la navigazione
+        dei menu ogni tanto si incastra e senza timeout un worker parallelo resterebbe appeso per sempre.
         """
 
         start = time.time()
@@ -299,7 +413,7 @@ class MeleeSession:
             # se timeout è specificato, ritorna False se il tempo è scaduto
             if timeout is not None and (time.time() - start) > timeout:
                 return False
-            
+
             # scartiamo tutti i frame fino all'avvio della partita
             gs = self.console.step()
             if gs is None:  # non dovrebbe succedere, ma se il gamestate è None, scartiamo il frame e riproviamo
@@ -322,7 +436,7 @@ class MeleeSession:
         """
         if self._gamestate is None:
             return False
-        
+
         a = any(stock <= 0 for stock in self.stocks)
         b = any(stock > old for stock, old in zip(self.stocks, self.old_stocks))
         self.old_stocks = self.stocks
@@ -331,6 +445,7 @@ class MeleeSession:
 
     @property
     def is_in_match(self) -> bool:
+        """ Ritorna True se siamo in partita (menu_state = IN_GAME e match non finito)"""
         return (
             self._gamestate is not None
             and self._gamestate.menu_state == melee.Menu.IN_GAME
@@ -338,32 +453,35 @@ class MeleeSession:
         )
 
     @property
-    def positions(self) -> list:
+    def positions(self) -> np.ndarray:
+        """ Ritorna le posizioni (x, y) dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
         if not self.is_in_match:
-            return []
+            return np.array([])
         gs = self._gamestate
-        return [(gs.players[i + 1].position.x, gs.players[i + 1].position.y)
-                for i in range(len(self.players))]
+        return np.array([(gs.players[i + 1].position.x, gs.players[i + 1].position.y)
+                         for i in range(len(self.players))])
 
     @property
-    def stocks(self) -> list:
+    def stocks(self) -> np.ndarray:
+        """ Ritorna gli stock dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
         gs = self._gamestate
         if gs.menu_state != melee.Menu.IN_GAME:
-            return []
-        return [gs.players[i + 1].stock for i in range(len(self.players))]
+            return np.array([])
+        return np.array([gs.players[i + 1].stock for i in range(len(self.players))])
 
     @property
-    def percents(self) -> list:
+    def percents(self) -> np.ndarray:
+        """ Ritorna i percentuali di danno dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
         if not self.is_in_match:
-            return []
+            return np.array([])
         gs = self._gamestate
-        return [gs.players[i + 1].percent for i in range(len(self.players))]
+        return np.array([gs.players[i + 1].percent for i in range(len(self.players))])  
 
     # -- input controller --
 
     @property
-    def controller_ports(self) -> list:
-        return [controller.port for controller in self.controllers]
+    def controller_ports(self) -> np.ndarray:
+        return np.array([controller.port for controller in self.controllers])
 
     def press_button(self, player_idx: int, button: melee.Button):
         if player_idx < 0 or player_idx >= len(self.controllers):
@@ -391,18 +509,17 @@ class MeleeSession:
         Chiude la sessione di gioco, uccide Dolphin e chiude il display virtuale (se presente).
         """
         if self.console is not None and self._external_console is None:
-            try:
-                self.console.stop()
-            except Exception as e:
-                print(f"[melee_env] errore durante lo stop della console: {e}")
+            self._safe_stop_console()   # stesso anti-deadlock dell'hard_reset
         self.console = None
 
         if self.display is not None:
             try:
                 self.display.stop()
             except Exception as e:
-                print(f"[melee_env] errore durante lo stop del display: {e}")
+                self._log(f"errore durante lo stop del display: {e}")
         self.display = None
+
+    # -- context manager --
 
     def __enter__(self) -> "MeleeSession":
         return self.hard_reset()
@@ -432,17 +549,14 @@ class MeleeSession:
         except psutil.NoSuchProcess:
             pass
 
-
-# -- multithreading ---
-
-class Timeout(Exception):
+class WatchdogTimeout(Exception):
     pass
 
 # funzione per evitare che il training rimanga appeso ad aspettare processi bloccati. Lancia Timeout se la funzione fn() non ritorna entro timeout_s secondi.
 def run_with_watchdog(fn, timeout_s, on_timeout):
     """
     Lancia la funzione fn() in un thread separato e attende al massimo timeout_s secondi.
-    Se fn() non ritorna entro il timeout, chiama on_timeout() e lancia Timeout. Se fn() ritorna dopo il timeout, lancia comunque Timeout.
+    Se fn() non ritorna entro il timeout, chiama on_timeout() e lancia WatchdogTimeout. Se fn() ritorna dopo il timeout, lancia comunque WatchdogTimeout.
     """
     finished = threading.Event()
     timed_out = {"v": False}
@@ -455,54 +569,19 @@ def run_with_watchdog(fn, timeout_s, on_timeout):
 
     w = threading.Thread(target=_watch, daemon=True)
     w.start()
+
     try:
         result = fn()
     except Exception as e:
         if timed_out["v"]:                 # la recv è saltata perché abbiamo ucciso Dolphin
-            raise Timeout() from e
+            raise WatchdogTimeout() from e
         raise                              # eccezione vera, non nostra
     finally:
         finished.set()
         w.join(timeout=1.0)
 
     if timed_out["v"]:                     # fn è tornata dopo il kill
-        raise Timeout()
+        raise WatchdogTimeout()
+    
     return result
 
-
-if __name__ == "__main__":
-    cfg = MeleeConfig.from_env()
-    print(f"[melee_env] Config caricata: {cfg}")
-
-    with MeleeSession(config=cfg) as session:
-
-        print("[melee_env] Sessione avviata")
-
-        session.advance_to_in_game(dbg=True)
-        print("\n[melee_env] Partita avviata")
-
-        print(f"[melee_env] is_in_match: {session.is_in_match}")
-        print(f"[melee_env] positions: {session.positions}")
-        print(f"[melee_env] stocks: {session.stocks}")
-        print(f"[melee_env] percents: {session.percents}")
-        print(f"[melee_env] controller_ports: {session.controller_ports}")
-
-        session.apply_input(player_idx=0, button=melee.Button.BUTTON_A, stick_x=0.0, stick_y=1.0)
-        print("[melee_env] Input applicato: player 0, A + stick up")
-
-        print(f"[melee_env] is_in_match: {session.is_in_match}")
-
-        prev_stocks = None
-        while True:
-            gs = session.step()
-            if gs is None:
-                continue
-            stocks = session.stocks
-            percents = session.percents
-            print(f"[melee_env] stocks: {stocks}, percents: {percents}\t\t\t", end="\r")
-            if session.match_over:
-                print(f"\n[melee_env] RESTART rilevato @ frame {gs.frame}: {prev_stocks} -> {stocks}")
-                break
-            prev_stocks = stocks
-        
-    print("[melee_env] close() eseguito dal context manager, sessione terminata.")

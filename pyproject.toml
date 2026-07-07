@@ -1,0 +1,24 @@
+[project]
+name = "smash_rl"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["smash_rl*"]
+
+[tool.pytest.ini_options]
+# di default girano solo gli unit test; quelli che avviano Dolphin: pytest -m dolphin
+addopts = "-m 'not dolphin'"
+markers = [
+    "dolphin: test di integrazione che avviano Dolphin (lenti, richiedono .env/ISO)",
+]
+filterwarnings = [
+    # libmelee (SlippstreamClient) forka il processo enet mentre il thread del
+    # watchdog è vivo: inevitabile col design attuale e a basso rischio (il
+    # watchdog aspetta solo su un Event, non tiene lock)
+    'ignore:This process \(pid=\d+\) is multi-threaded:DeprecationWarning',
+]
