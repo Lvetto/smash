@@ -41,7 +41,6 @@ class MeleeEnv(gym.Env):
         self.action_space,      self._decode = ACT_SPECS[action_function]
         self._reward = REWARD_FNS[reward_function]
 
-        self.ctx = Ctx(agent_port=1, opp_port=2)
         self._last_obs = np.zeros(self.observation_space.shape, np.float32)  # unica fonte di verità
         self._prev_gs = None
 
@@ -53,6 +52,7 @@ class MeleeEnv(gym.Env):
                    PlayerSpec(opp_char, cpu_level=opp_level)]
 
         self.session = MeleeSession(config=config or MeleeConfig.from_env(), players=players)
+        self.ctx = Ctx(agent_port=1, opp_port=2, session=self.session)  # dati necessari per le observation/reward che leggono le properties della session
 
         self._steps = 0
 

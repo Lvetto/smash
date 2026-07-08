@@ -254,7 +254,7 @@ class MeleeSession:
                 )
             time.sleep(0.1)
 
-        # ripristina la modalità bloccante: la scrittura deve avere la stessa semantica di open(path, "w")
+        # ripristina la modalità bloccante
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
 
@@ -429,6 +429,13 @@ class MeleeSession:
 
     # -- proprietà per lo stato della partita --
 
+    def _player_values(self, getter) -> np.ndarray:
+        """Applica getter a ogni giocatore dell'ultimo gamestate; array vuoto se non in game."""
+        gs = self._gamestate
+        if gs is None or gs.menu_state != melee.Menu.IN_GAME:
+            return np.array([])
+        return np.array([getter(gs.players[i + 1]) for i in range(len(self.players))])
+
     @property
     def match_over(self) -> bool:
         """
@@ -454,28 +461,39 @@ class MeleeSession:
 
     @property
     def positions(self) -> np.ndarray:
-        """ Ritorna le posizioni (x, y) dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
-        if not self.is_in_match:
-            return np.array([])
-        gs = self._gamestate
-        return np.array([(gs.players[i + 1].position.x, gs.players[i + 1].position.y)
-                         for i in range(len(self.players))])
+        """ Posizioni (x, y) dei giocatori, shape (n_players, 2). Array vuoto se non in game. """
+        return self._player_values(lambda p: (p.position.x, p.position.y))
+
+    @property
+    def velocities(self) -> np.ndarray:
+        """
+        Velocità (vx_self, vy_self, vx_attack, vy_attack) dei giocatori, shape (n_players, 4).
+        vx_self somma le componenti a terra e in aria (una delle due è sempre 0). Array vuoto se non in game.
+        """
+        return self._player_values(lambda p: (
+            p.speed_ground_x_self + p.speed_air_x_self,
+            p.speed_y_self,
+            p.speed_x_attack,
+            p.speed_y_attack,
+        ))
 
     @property
     def stocks(self) -> np.ndarray:
-        """ Ritorna gli stock dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
-        gs = self._gamestate
-        if gs.menu_state != melee.Menu.IN_GAME:
-            return np.array([])
-        return np.array([gs.players[i + 1].stock for i in range(len(self.players))])
+        """ Stock dei giocatori, shape (n_players,). Array vuoto se non in game. """
+        return self._player_values(lambda p: p.stock)
 
     @property
     def percents(self) -> np.ndarray:
-        """ Ritorna i percentuali di danno dei giocatori in game. Se non siamo in partita, ritorna una lista vuota. """
-        if not self.is_in_match:
-            return np.array([])
+        """ Percentuali di danno dei giocatori, shape (n_players,). Array vuoto se non in game. """
+        return self._player_values(lambda p: p.percent)
+
+    @property
+    def distance(self) -> float:
+        """ Distanza tra i due giocatori. 0.0 se non in game. """
         gs = self._gamestate
-        return np.array([gs.players[i + 1].percent for i in range(len(self.players))])  
+        if gs is None or gs.menu_state != melee.Menu.IN_GAME:
+            return 0.0
+        return gs.distance
 
     # -- input controller --
 

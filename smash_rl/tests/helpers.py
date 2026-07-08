@@ -10,6 +10,8 @@ import melee
 from gymnasium import spaces
 
 from smash_rl.environment import MeleeEnv
+from smash_rl.session import MeleeSession
+from smash_rl.specs.context import Ctx
 from smash_rl.specs.observations import register_obs, OBS_SPECS
 from smash_rl.specs.rewards import register_reward, REWARD_FNS
 
@@ -36,26 +38,46 @@ if "test_one_per_frame" not in REWARD_FNS:
         return 1.0
 
 
-def make_gs(frame=100, p1_stock=4, p2_stock=4, p1_percent=0.0, p2_percent=0.0):
-    """Gamestate finto con i soli campi usati da env e specs di test."""
-    players = {1: SimpleNamespace(stock=p1_stock, percent=p1_percent),
-               2: SimpleNamespace(stock=p2_stock, percent=p2_percent)}
-    return SimpleNamespace(frame=frame, players=players,
+def make_gs(frame=100, p1_stock=4, p2_stock=4, p1_percent=0.0, p2_percent=0.0,
+            p1_pos=(0.0, 0.0), p2_pos=(10.0, 0.0),
+            p1_vel=(0.0, 0.0, 0.0, 0.0), p2_vel=(0.0, 0.0, 0.0, 0.0),
+            distance=10.0):
+    """
+    Gamestate finto con i campi usati da env e specs. Le velocità sono tuple
+    (vx_self, vy_self, vx_attack, vy_attack); vx_self finisce nella componente a terra.
+    """
+    def player(stock, percent, pos, vel):
+        return SimpleNamespace(
+            stock=stock, percent=percent,
+            position=SimpleNamespace(x=pos[0], y=pos[1]),
+            speed_ground_x_self=vel[0], speed_air_x_self=0.0,
+            speed_y_self=vel[1], speed_x_attack=vel[2], speed_y_attack=vel[3],
+        )
+
+    players = {1: player(p1_stock, p1_percent, p1_pos, p1_vel),
+               2: player(p2_stock, p2_percent, p2_pos, p2_vel)}
+    return SimpleNamespace(frame=frame, players=players, distance=distance,
                            menu_state=melee.Menu.IN_GAME)
 
 
-class FakeSession:
+class FakeSession(MeleeSession):
     """
     Sostituto di MeleeSession: step() consuma la sequenza `frames` (gamestate,
-    None, o eccezioni da lanciare) senza toccare Dolphin. Replica la logica di
-    match_over/stocks/percents della sessione vera.
+    None, o eccezioni da lanciare) senza toccare Dolphin. Eredita le properties
+    vere (positions, velocities, stocks, percents, distance, match_over), quindi
+    i test le esercitano davvero.
     """
 
     def __init__(self, frames):
+        # niente super().__init__(): nessuna config reale, nessun Dolphin
         self.config = SimpleNamespace(instance_id=0)
-        self.frames = list(frames)
+        self.players = [None, None]  # serve solo len() nelle properties
         self.old_stocks = [4, 4]
         self._gamestate = None
+        self._external_console = None
+        self.console = None
+        self.display = None
+        self.frames = list(frames)
         self.closed = False
         self.inputs = []
 
@@ -70,31 +92,6 @@ class FakeSession:
     def apply_input(self, **kwargs):
         self.inputs.append(kwargs)
 
-    @property
-    def match_over(self):
-        gs = self._gamestate
-        if gs is None:
-            return False
-        stocks = [gs.players[1].stock, gs.players[2].stock]
-        a = any(s <= 0 for s in stocks)
-        b = any(s > old for s, old in zip(stocks, self.old_stocks))
-        self.old_stocks = stocks
-        return a or b
-
-    @property
-    def stocks(self):
-        if self._gamestate is None:
-            return np.array([])
-        return np.array([self._gamestate.players[1].stock,
-                         self._gamestate.players[2].stock])
-
-    @property
-    def percents(self):
-        if self._gamestate is None:
-            return np.array([])
-        return np.array([self._gamestate.players[1].percent,
-                         self._gamestate.players[2].percent])
-
     def force_kill_dolphin(self):
         pass
 
@@ -102,13 +99,14 @@ class FakeSession:
         self.closed = True
 
 
-def make_test_env(frames, reward_function="test_zero"):
+def make_test_env(frames, observation_function="test_minimal", reward_function="test_zero"):
     """MeleeEnv con specs di test e FakeSession al posto della sessione vera."""
     cfg = SimpleNamespace(instance_id=0)  # MeleeSession si limita a memorizzarla
     env = MeleeEnv(config=cfg,
-                   observation_function="test_minimal",
+                   observation_function=observation_function,
                    action_function="a_only",
                    reward_function=reward_function)
     env.session = FakeSession(frames)
+    env.ctx = Ctx(agent_port=1, opp_port=2, session=env.session)  # il ctx deve puntare alla sessione finta
     env._booted_once = True
     return env

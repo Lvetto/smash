@@ -76,6 +76,17 @@ def test_recoverable_error_truncates_episode():
     assert env.session.closed, "la sessione va chiusa per forzare il reboot al reset"
 
 
+def test_env_with_session_based_observation():
+    # end-to-end con uno spec che legge le properties della session (via ctx.session)
+    frames = [make_gs(frame=i, distance=20.0) for i in range(10)]
+    env = make_test_env(frames, observation_function="pos_vel_stats")
+
+    obs, _, _, _, _ = env.step(0)
+
+    assert obs.shape == (17,)
+    assert env.observation_space.contains(obs)
+
+
 def test_action_decode_reaches_controller():
     frames = [make_gs(frame=i) for i in range(10)]
     env = make_test_env(frames)
