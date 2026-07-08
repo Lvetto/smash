@@ -1,3 +1,4 @@
+import configparser
 import fcntl
 import os
 import shutil
@@ -56,6 +57,7 @@ def test_build_console_propagates_config(monkeypatch):
     assert captured["slippi_port"] == 51459
     assert captured["use_exi_inputs"] is cfg.use_exi_inputs
     assert captured["enable_ffw"] is cfg.enable_ffw
+    assert captured["disable_audio"] is cfg.disable_audio
     assert len(session.controllers) == len(session.players)
 
 
@@ -634,6 +636,161 @@ def test_context_manager_boots_and_closes():
     with session as s:
         assert s is session
     assert closes == [True]
+
+
+# -- porta umana: niente pipe, mapping del pad iniettato nella config di Dolphin --
+
+def test_build_console_skips_human_controller(monkeypatch):
+    created = []
+    monkeypatch.setattr("smash_rl.session.melee.Console", lambda **kw: SimpleNamespace())
+    monkeypatch.setattr("smash_rl.session.melee.Controller",
+                        lambda console, port: created.append(port) or SimpleNamespace(port=port))
+
+    cfg = MeleeConfig(dolphin_exe=Path("/nonexistent/dolphin-emu"),
+                      iso=Path("/nonexistent/SSBM.iso"),
+                      replay_dir=Path("/nonexistent/replays"))
+    session = MeleeSession(config=cfg,
+                           players=[PlayerSpec(melee.Character.FOX, 0),
+                                    PlayerSpec(human=True)])
+    session._build_console()
+
+    assert created == [1], "per la porta umana non va creato nessun controller (pipe)"
+    assert session.controllers[0].port == 1
+    assert session.controllers[1] is None, "la lista deve restare allineata a players"
+
+
+def test_hard_reset_installs_pad_config_before_run():
+    session = make_bare_session()
+    session.players = [PlayerSpec(melee.Character.FOX, 0), PlayerSpec(human=True)]
+    order = []
+    session._kill_stale_dolphins = lambda: order.append("kill_stale")
+    session._ensure_display = lambda: order.append("display")
+
+    def build():
+        order.append("build")
+        session.console = SimpleNamespace(run=lambda iso_path: order.append("run"),
+                                          connect=lambda: True, _process=None)
+        session.controllers = [SimpleNamespace(port=1), None]
+
+    session._build_console = build
+    session._install_human_pad_config = lambda: order.append("pad")
+    session._connect_controller_safe = lambda c: order.append(("controller", c.port))
+
+    session.hard_reset()
+    # il mapping va scritto DOPO le config di libmelee (create con la console) e PRIMA
+    # del boot che le legge; la porta umana non deve provare a connettere una pipe
+    assert order == ["kill_stale", "display", "build", "pad", "run", ("controller", 1)]
+
+
+def test_input_rejected_on_human_port():
+    log = []
+    session = make_bare_session()
+    session.players = [PlayerSpec(melee.Character.FOX, 0), PlayerSpec(human=True)]
+    session.controllers = [_recording_controller(1, log), None]
+
+    np.testing.assert_array_equal(session.controller_ports, [1])
+    session.apply_input(0)  # la porta bot continua a funzionare
+    assert log == [("tilt", 1, 0.5, 0.5), ("flush", 1)]
+
+    with pytest.raises(ValueError, match="umana"):
+        session.apply_input(1)
+    with pytest.raises(ValueError, match="umana"):
+        session.press_button(1, melee.Button.BUTTON_A)
+
+
+def test_advance_to_in_game_human_navigates_own_menu(monkeypatch):
+    calls = []
+
+    class FakeMenuHelper:
+        def menu_helper_simple(self, **kwargs):
+            calls.append((kwargs["controller"].port, kwargs["autostart"]))
+
+    monkeypatch.setattr("smash_rl.session.melee.MenuHelper", FakeMenuHelper)
+
+    menu = make_gs()
+    menu.menu_state = melee.Menu.CHARACTER_SELECT
+    session = make_bare_session()
+    session.players = [PlayerSpec(melee.Character.FOX, 0), PlayerSpec(human=True)]
+    session.controllers = [SimpleNamespace(port=1), None]
+    session.console = make_console_stub([menu, make_gs()])
+
+    session.advance_to_in_game(timeout=5.0)
+
+    # nessun input sulla porta umana e niente autostart: la partita la avvia l'umano
+    assert calls == [(1, False)]
+
+
+def _fake_dolphin_config_dir(tmp_path):
+    config_dir = tmp_path / "Config"
+    config_dir.mkdir()
+    (config_dir / "GCPadNew.ini").write_text("[GCPad1]\nDevice = Pipe/0/slippibot1\n")
+    (config_dir / "Dolphin.ini").write_text("[Core]\nsidevice0 = 6\n")
+    return config_dir
+
+
+def test_install_human_pad_config_writes_mapping_and_sidevice(tmp_path):
+    template = tmp_path / "gcpad_human.ini"
+    template.write_text("[GCPad]\nDevice = evdev/0/PadFinto\nButtons/A = SOUTH\n")
+    config_dir = _fake_dolphin_config_dir(tmp_path)
+
+    session = make_bare_session(human_pad_config=template)
+    session.players = [PlayerSpec(melee.Character.FOX, 0), PlayerSpec(human=True)]
+    session.console = SimpleNamespace(_get_dolphin_config_path=lambda: str(config_dir))
+
+    session._install_human_pad_config()
+
+    pads = configparser.ConfigParser()
+    pads.optionxform = str
+    pads.read(config_dir / "GCPadNew.ini")
+    assert pads["GCPad2"]["Device"] == "evdev/0/PadFinto"
+    assert pads["GCPad2"]["Buttons/A"] == "SOUTH"
+    assert pads["GCPad1"]["Device"] == "Pipe/0/slippibot1", "il pad del bot non va toccato"
+
+    core = configparser.ConfigParser()
+    core.read(config_dir / "Dolphin.ini")
+    assert core["Core"]["sidevice1"] == "6", "porta umana = standard controller in Dolphin"
+    assert core["Core"]["sidevice0"] == "6"
+
+
+def test_install_human_pad_config_requires_mapping(tmp_path):
+    session = make_bare_session(human_pad_config=None)
+    session.players = [PlayerSpec(human=True)]
+    with pytest.raises(FileNotFoundError, match="configure-pad"):
+        session._install_human_pad_config()
+
+    vuoto = tmp_path / "vuoto.ini"
+    vuoto.write_text("")
+    session.config.human_pad_config = vuoto
+    session.console = SimpleNamespace(_get_dolphin_config_path=lambda: str(tmp_path))
+    with pytest.raises(ValueError, match="sezione"):
+        session._install_human_pad_config()
+
+
+def test_install_human_pad_config_noop_without_humans():
+    session = make_bare_session()   # players=[None, None], console assente
+    session._install_human_pad_config()  # non deve toccare niente né sollevare
+
+
+def test_config_for_play(fake_dotenv, monkeypatch):
+    # la build EXI del training forza il video Null: per giocare serve la netplay,
+    # a velocità normale, con video/audio e senza pipe bloccanti
+    root = fake_dotenv / "netplay"
+    exe = root / "usr" / "bin" / "dolphin-emu"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.setenv("DOLPHIN_NETPLAY_DIR", str(root))
+    pad = fake_dotenv / "pad.ini"
+
+    cfg = MeleeConfig.for_play(human_pad_config=pad)
+
+    assert cfg.dolphin_exe == exe, "da una radice AppImage va risolto usr/bin/dolphin-emu"
+    assert cfg.headless is False
+    assert cfg.enable_ffw is False
+    assert cfg.use_exi_inputs is False
+    assert cfg.blocking_input is False
+    assert cfg.disable_audio is False
+    assert cfg.human_pad_config == pad
+    assert cfg.replay_dir == fake_dotenv / "replays" / "play"
 
 
 def test_close_swallows_display_errors():

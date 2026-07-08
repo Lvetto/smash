@@ -1,4 +1,5 @@
 from __future__ import annotations
+import configparser
 import errno
 import fcntl
 import os
@@ -51,6 +52,9 @@ class MeleeConfig:
                                 # Dolphin corre libero mentre il worker aspetta il lockstep del VecEnv e
                                 # console.step() legge frame sempre più vecchi (obs stantie, action in ritardo).
     headless: bool = True       # True = crea un Xvfb; False = usa il DISPLAY esistente
+    disable_audio: bool = True  # False = audio attivo (per giocare dal vivo contro l'agente)
+    human_pad_config: Optional[Path] = None  # template ini col mapping del gamepad umano
+                                             # (generato con `python play.py --configure-pad`)
 
     # -- identità dell'istanza (per il multi-istanza) --
     slippi_port: int = 31241    # porta dello spectator server; unica per istanza
@@ -61,19 +65,30 @@ class MeleeConfig:
     infinite_time: bool = False  # True = tempo infinito. False = tempo normale di 8 minuti
     instant_match_restart: bool = False  # True = restart istantaneo. False = restart lento via menu. Messo a False perché è implementato male e crea problemi con la selezione di personaggi e scenari
 
+    @staticmethod
+    def _resolve_dolphin_exe(path: Path) -> Path:
+        """Accetta sia il path diretto all'eseguibile sia la radice di un AppImage estratto."""
+        if path.is_dir():
+            candidate = path / "usr" / "bin" / "dolphin-emu"
+            if candidate.is_file():
+                return candidate
+        return path
+
     @classmethod
-    def from_env(cls, dotenv_path: Optional[str] = None, save_name: str = "default", **overrides) -> "MeleeConfig":
+    def from_env(cls, dotenv_path: Optional[str] = None, save_name: str = "default",
+                 dolphin_env_var: str = "DOLPHIN_EXI_DIR", **overrides) -> "MeleeConfig":
         """Costruisce la config leggendo le variabili dal .env.
 
         Variabili attese:
           DOLPHIN_EXI_DIR  -> path diretto a dolphin/usr/bin/dolphin-emu
+                              (o un'altra build via dolphin_env_var, es. DOLPHIN_NETPLAY_DIR)
           SMBM_ISO_PATH    -> path (relativo alla cwd) dell'immagine .iso
           REPLAY_DIR       -> opzionale; default /home/luca/melee/replays
         """
 
         load_dotenv(dotenv_path)
 
-        dolphin_exe = Path(os.environ["DOLPHIN_EXI_DIR"])
+        dolphin_exe = cls._resolve_dolphin_exe(Path(os.environ[dolphin_env_var]))
         iso = Path(os.environ["SMBM_ISO_PATH"])
         replay_dir = Path(os.environ["REPLAY_DIR"]) / save_name
 
@@ -93,6 +108,20 @@ class MeleeConfig:
                       replay_dir=base.replay_dir / f"instance_{i}")
         cfg.replay_dir.mkdir(parents=True, exist_ok=True)
         return cfg
+
+    @classmethod
+    def for_play(cls, save_name: str = "play", **overrides) -> "MeleeConfig":
+        """
+        Config per giocare in tempo reale contro l'agente. Usa la build netplay
+        (DOLPHIN_NETPLAY_DIR nel .env): quella EXI del training forza il backend
+        video Null e non mostra nulla. Velocità normale, video e audio attivi,
+        pipe non bloccanti (il ritmo lo dà Dolphin a 60fps, non il bot).
+        """
+        defaults = dict(headless=False, enable_ffw=False, use_exi_inputs=False,
+                        blocking_input=False, disable_audio=False)
+        defaults.update(overrides)
+        return cls.from_env(save_name=save_name, dolphin_env_var="DOLPHIN_NETPLAY_DIR",
+                            **defaults)
 
     def validate(self) -> None:
         """Verifica che la config abbia senso e che le risorse esistano. Lancia FileNotFoundError se qualcosa non va."""
@@ -117,10 +146,18 @@ class PlayerSpec:
     """
     Configurazione di un giocatore (porta) per la partita. Contiene il personaggio e il livello CPU.
     Livello CPU 0 = player, 1-9 = CPU, 10 = random.
+    human=True = porta riservata a un giocatore umano: niente pipe libmelee, l'input arriva
+    dal gamepad configurato in Dolphin (config.human_pad_config) e nei menu sceglie da sé.
     """
 
     character: melee.Character = melee.Character.FOX
     cpu_level: int = 9
+    human: bool = False
+
+
+def _is_human(spec) -> bool:
+    """True se lo spec (eventualmente None nei test) è una porta umana."""
+    return spec is not None and getattr(spec, "human", False)
 
 # usato per testare la sessione di gioco. Inizializza due cpu, quindi una partita autonoma che non richiede input
 def test_player_specs() -> list:
@@ -194,13 +231,15 @@ class MeleeSession:
                 use_exi_inputs=self.config.use_exi_inputs,
                 enable_ffw=self.config.enable_ffw,
                 blocking_input=self.config.blocking_input,
-                disable_audio=True,
+                disable_audio=self.config.disable_audio,
                 infinite_time=self.config.infinite_time,
                 instant_match_restart=self.config.instant_match_restart,
             )
 
+        # la lista resta allineata a self.players: None per le porte umane (niente pipe)
         self.controllers = [
-            melee.Controller(self.console, port + 1) for port in range(len(self.players))
+            None if _is_human(spec) else melee.Controller(self.console, port + 1)
+            for port, spec in enumerate(self.players)
         ]
 
     def _dolphin_alive(self) -> bool:       # verifica il processo sia ancora attivo. Se il processo è morto, la pipe del controller non si sblocca e il worker resta appeso per sempre.
@@ -267,6 +306,55 @@ class MeleeSession:
         controller.pipe = os.fdopen(fd, "w")
         self.console.controllers.append(controller)
 
+    def _install_human_pad_config(self) -> None:
+        """
+        Installa il mapping del gamepad umano nella home temporanea di Dolphin, per le
+        porte con PlayerSpec.human=True: la sezione [GCPad<porta>] in GCPadNew.ini e
+        SIDevice<porta-1> = 6 (standard controller) in Dolphin.ini. Va chiamata tra la
+        creazione della console (che scrive le config) e console.run() (che le legge).
+        """
+        human_ports = [i + 1 for i, spec in enumerate(self.players) if _is_human(spec)]
+        if not human_ports:
+            return
+
+        template_path = getattr(self.config, "human_pad_config", None)
+        if template_path is None or not Path(template_path).is_file():
+            raise FileNotFoundError(
+                "manca il mapping del gamepad umano: generalo con "
+                "`python play.py --configure-pad` e passalo in MeleeConfig.human_pad_config"
+            )
+
+        template = configparser.ConfigParser()
+        template.optionxform = str   # i nomi delle chiavi di Dolphin vanno preservati
+        template.read(template_path)
+        if not template.sections():
+            raise ValueError(f"nessuna sezione di mapping in {template_path}")
+        mapping = template[template.sections()[0]]   # unica sezione attesa, il nome è irrilevante
+
+        config_dir = Path(self.console._get_dolphin_config_path())
+
+        pads = configparser.ConfigParser()
+        pads.optionxform = str
+        pads.read(config_dir / "GCPadNew.ini")
+        core = configparser.ConfigParser()
+        core.optionxform = str
+        core.read(config_dir / "Dolphin.ini")
+
+        for port in human_ports:
+            section = f"GCPad{port}"
+            if pads.has_section(section):
+                pads.remove_section(section)
+            pads.add_section(section)
+            for key, value in mapping.items():
+                pads.set(section, key, value)
+            core.set("Core", f"SIDevice{port - 1}", melee.enums.ControllerType.STANDARD.value)
+
+        with open(config_dir / "GCPadNew.ini", "w") as f:
+            pads.write(f)
+        with open(config_dir / "Dolphin.ini", "w") as f:
+            core.write(f)
+        self._log(f"mapping del pad umano installato (porte {human_ports})")
+
     def _safe_stop_console(self) -> None:
         """
         Ferma la console in maniera non bloccante, evitando close() che può restare appeso se Dolphin è morto. Chiude la pipe del controller e uccide Dolphin.
@@ -308,6 +396,7 @@ class MeleeSession:
 
         self._ensure_display()
         self._build_console()
+        self._install_human_pad_config()   # prima del run: Dolphin legge la config al boot
 
         self.console.run(iso_path=str(self.config.iso))
         self._log(f"dolphin avviato (porta {self.config.slippi_port})")
@@ -320,7 +409,8 @@ class MeleeSession:
             )
 
         for controller in self.controllers:
-            self._connect_controller_safe(controller)
+            if controller is not None:   # le porte umane non hanno pipe
+                self._connect_controller_safe(controller)
         self._log("console e controller connessi")
 
         self._gamestate = None
@@ -360,7 +450,9 @@ class MeleeSession:
         start = time.time()
         menu_helper = melee.MenuHelper()
         specs = list(player_specs or self.players)
-        last_idx = len(specs) - 1
+        bot_idxs = [i for i, spec in enumerate(specs) if not _is_human(spec)]
+        # con un umano in partita nessun bot avvia: è l'umano a premere start quando è pronto
+        autostart_idx = bot_idxs[-1] if bot_idxs and len(bot_idxs) == len(specs) else None
 
         while True:
             if timeout is not None and (time.time() - start) > timeout:
@@ -377,14 +469,15 @@ class MeleeSession:
             if gs.menu_state == melee.Menu.IN_GAME:
                 break
 
-            for i, spec in enumerate(specs):
+            for i in bot_idxs:
+                spec = specs[i]
                 menu_helper.menu_helper_simple(
                     gamestate=gs,
                     controller=self.controllers[i],
                     character_selected=spec.character,
                     stage_selected=stage or melee.Stage.FINAL_DESTINATION,
                     cpu_level=spec.cpu_level,
-                    autostart=(i == last_idx),  # l'ultimo giocatore avvia
+                    autostart=(i == autostart_idx),
                 )
 
             if dbg:
@@ -504,19 +597,24 @@ class MeleeSession:
 
     @property
     def controller_ports(self) -> np.ndarray:
-        return np.array([controller.port for controller in self.controllers])
+        return np.array([controller.port for controller in self.controllers
+                         if controller is not None])
 
     def press_button(self, player_idx: int, button: melee.Button):
         if player_idx < 0 or player_idx >= len(self.controllers):
             raise ValueError(
                 f"player_idx {player_idx} fuori range (0..{len(self.controllers) - 1})"
             )
+        if self.controllers[player_idx] is None:
+            raise ValueError(f"player_idx {player_idx} è una porta umana: nessun controller bot")
         self.controllers[player_idx].press_button(button)
 
     def apply_input(self, player_idx, button=None, stick_x=0.5, stick_y=0.5, press=True):
         # dovrebbe andare bene per tutti i comandi che durano un singolo frame, a patto di avere un frame_skip >= 2
         # NON va bene per L e R (scudi, dash, grab) perché devono essere tenuti per più frame. Per ora non ho voglia di implementarli
         c = self.controllers[player_idx]
+        if c is None:
+            raise ValueError(f"player_idx {player_idx} è una porta umana: nessun controller bot")
         c.tilt_analog(melee.Button.BUTTON_MAIN, stick_x, stick_y)  # stick: sempre tenuto
         if button is not None:
             if press:
