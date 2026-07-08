@@ -1,0 +1,5 @@
+# Installa il pacchetto in editable con tutte le dipendenze (vedi pyproject.toml):
+#   pip install -r requirements.txt
+# Servono anche (non installabili da pip): le build di Dolphin, la ISO e il .env
+# con DOLPHIN_EXI_DIR / DOLPHIN_NETPLAY_DIR / SMBM_ISO_PATH / REPLAY_DIR.
+-e .[dev]
