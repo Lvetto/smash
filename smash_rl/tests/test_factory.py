@@ -23,7 +23,11 @@ class DummyEnv(gym.Env):
 
     def __init__(self):
         self.reset_calls = 0
+        self.close_calls = 0
         self.kwargs = None
+
+    def close(self):
+        self.close_calls += 1
 
     def reset(self, *, seed=None, options=None):
         self.reset_calls += 1
@@ -74,6 +78,41 @@ def test_make_env_creation_error_propagates(patched_factory, monkeypatch):
 
     with pytest.raises(FileNotFoundError):
         make_env(0, seed=42, save_name="test_save", worker_mode=False)()
+
+
+def test_make_env_worker_mode_redirects_and_arms_sigterm(patched_factory, monkeypatch):
+    """worker_mode=True: stdout/stderr sul log per istanza e SIGTERM che chiude l'env."""
+    import os
+    import signal
+
+    exits = []
+    monkeypatch.setattr(factory.os, "_exit", lambda code: exits.append(code))
+
+    real_out, real_err = sys.stdout, sys.stderr
+    old_handler = signal.getsignal(signal.SIGTERM)
+    try:
+        make_env(991, seed=0, save_name="test_save", worker_mode=True)()
+
+        assert sys.stdout is sys.stderr
+        assert sys.stdout.name == "/tmp/melee_worker_991.log", \
+            "ogni worker deve loggare sul proprio file, separato per istanza"
+
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler) and handler is not old_handler, \
+            "il worker deve installare un handler SIGTERM (per la morte del main)"
+        handler(signal.SIGTERM, None)
+        assert exits == [1], "alla morte del main il worker deve uscire subito"
+        assert patched_factory.close_calls == 1, \
+            "l'handler SIGTERM deve chiudere l'env (e quindi Dolphin)"
+    finally:
+        log = sys.stdout
+        sys.stdout, sys.stderr = real_out, real_err
+        log.close()
+        signal.signal(signal.SIGTERM, old_handler)
+        try:
+            os.remove("/tmp/melee_worker_991.log")
+        except OSError:
+            pass
 
 
 @pytest.mark.dolphin

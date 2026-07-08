@@ -79,7 +79,16 @@ class FakeSession(MeleeSession):
         self.display = None
         self.frames = list(frames)
         self.closed = False
+        self.close_calls = 0
+        self.hard_resets = 0
         self.inputs = []
+
+    def hard_reset(self):
+        self.hard_resets += 1
+        return self
+
+    def advance_to_in_game(self, **kwargs):
+        return None  # il primo elemento di `frames` fa da gamestate d'ingresso in partita
 
     def step(self):
         gs = self.frames.pop(0) if self.frames else None
@@ -97,6 +106,7 @@ class FakeSession(MeleeSession):
 
     def close(self):
         self.closed = True
+        self.close_calls += 1
 
 
 def make_test_env(frames, observation_function="test_minimal", reward_function="test_zero"):

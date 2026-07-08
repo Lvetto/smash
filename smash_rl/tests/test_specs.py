@@ -42,8 +42,10 @@ def test_neutral_action_is_zero():
 
 def test_registries_expose_default_specs():
     assert "full_v1" in OBS_SPECS
-    space, _ = OBS_SPECS["full_v1"]
+    space, build = OBS_SPECS["full_v1"]
     assert space.shape == (32,)
+    with pytest.raises(NotImplementedError):  # stub: deve fallire chiaro, non ritornare None
+        build(make_gs(), _ctx_with_gamestate(make_gs()))
 
     assert "v1" in REWARD_FNS
 
