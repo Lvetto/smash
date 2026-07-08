@@ -27,9 +27,10 @@ def register_obs(name, space):
     return deco
 
 @register_obs("full_v1", spaces.Box(-1.0, 1.0, (32,), np.float32))
-def build_full_v1(gs, ctx):
-    pass
-
+def build_full_v1(gs, ctx):     # da non usare, per ora rimane per non dover cambiare i default altrove
+    raise NotImplementedError(
+        "usa 'pos_vel' o 'pos_vel_stats', questa verra rimossa a breve"
+    )
 
 # -- observation basate sulle properties della session (ctx.session) --
 

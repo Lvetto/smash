@@ -114,8 +114,11 @@ class MeleeEnv(gym.Env):
         # TimeoutError (recuperabile) invece di aspettare il SIGKILL del watchdog
         self.session.advance_to_in_game(timeout=self.advance_timeout_s)
 
-        gs = self.session.step()
+        # input neutro mentre si aspetta il primo frame valido: con blocking_input
+        # Dolphin si ferma ad aspettare l'input a ogni frame in game
+        gs = None
         while gs is None:
+            self.session.apply_input(player_idx=self.agent_idx)
             gs = self.session.step()
 
         self._prev_gs = gs

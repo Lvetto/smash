@@ -46,6 +46,10 @@ class MeleeConfig:
     display_size: tuple = (640, 480)    # dimensioni del display virtuale (Xvfb). Più grande = più lento. Più piccolo = più probabile che Dolphin crashi.
     use_exi_inputs: bool = True # True per addestramento. EXI supporta aumento della velocità
     enable_ffw: bool = True     # True per addestramento. FFWD abilita aumento della velocità
+    blocking_input: bool = True # True = Dolphin si ferma ad aspettare l'input del bot a ogni frame.
+                                # INDISPENSABILE col multi-istanza: senza (default libmelee = False), con FFW
+                                # Dolphin corre libero mentre il worker aspetta il lockstep del VecEnv e
+                                # console.step() legge frame sempre più vecchi (obs stantie, action in ritardo).
     headless: bool = True       # True = crea un Xvfb; False = usa il DISPLAY esistente
 
     # -- identità dell'istanza (per il multi-istanza) --
@@ -189,6 +193,7 @@ class MeleeSession:
                 tmp_home_directory=True,
                 use_exi_inputs=self.config.use_exi_inputs,
                 enable_ffw=self.config.enable_ffw,
+                blocking_input=self.config.blocking_input,
                 disable_audio=True,
                 infinite_time=self.config.infinite_time,
                 instant_match_restart=self.config.instant_match_restart,
