@@ -144,10 +144,12 @@ def main(argv=None):
     agent_char = melee.Character[args.char.upper()]
     stage = melee.Stage[args.stage.upper()]
 
+    opponent_char = melee.Character.MARTH
+
     config = MeleeConfig.for_play(human_pad_config=args.pad_config)
     session = MeleeSession(config=config,
                            players=[PlayerSpec(agent_char, cpu_level=0),
-                                    PlayerSpec(human=True)])
+                                    PlayerSpec(opponent_char, human=False, cpu_level=7)])
     ctx = Ctx(agent_port=1, opp_port=2, session=session)
     predict = lambda obs: model.predict(obs, deterministic=True)[0]
 
