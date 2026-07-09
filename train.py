@@ -19,20 +19,20 @@ I log dei worker finiscono in /tmp/melee_worker_N.log; i grafici in ./tb_logs/
 """
 
 # -- configurazione  --
-RUN_NAME = "continuation"  # nome del run, usato per checkpoint e tensorboard
+RUN_NAME = "cpu_7"  # nome del run, usato per checkpoint e tensorboard
 N_ENVS = 4
 INSTANCE_BASE = 0        # offset di porte slippi/replay dir, utile per non collidere con altri training attivi
-TOTAL_STEPS = 6_000_000  # numero totale di timesteps da fare (per tutti gli env)
+TOTAL_STEPS = 3_000_000  # numero totale di timesteps da fare (per tutti gli env)
 SKIP_KILL = False        # True = non uccidere i Dolphin esistenti (se c'è un altro training attivo)
 CKPT_EVERY = 50_000      # salva i pesi ogni N timesteps totali (<= 0 = disabilitato)
-PRETRAINED_MODEL_PATH = "dqn_melee_multiprocessing_test_fixed_3.zip"   # path di un .zip per riprendere un addestramento
+PRETRAINED_MODEL_PATH = "dqn_melee_continuation.zip"   # path di un .zip per riprendere un addestramento
 
 BOOT_STAGGER_S = 8.0     # sfasamento del boot tra worker, per non litigarsi le risorse all'avvio
 
 ENV_KWARGS = dict(
     agent_char=melee.Character.FOX,
     opp_char=melee.Character.MARTH,
-    opp_level=5,
+    opp_level=7,
     observation_function="pos_vel",
     action_function="a_only",
     reward_function="v1",
