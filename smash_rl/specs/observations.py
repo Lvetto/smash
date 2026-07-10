@@ -1,5 +1,6 @@
 import numpy as np
 from gymnasium import spaces
+from gymnasium.spaces import Box
 
 STAGE_X_MAX, STAGE_Y_MAX = 85.0, 50.0
 VEL_NORM = 5.0
@@ -25,12 +26,6 @@ def register_obs(name, space):
         OBS_SPECS[name] = (space, fn)
         return fn
     return deco
-
-@register_obs("full_v1", spaces.Box(-1.0, 1.0, (32,), np.float32))
-def build_full_v1(gs, ctx):     # da non usare, per ora rimane per non dover cambiare i default altrove
-    raise NotImplementedError(
-        "usa 'pos_vel' o 'pos_vel_stats', questa verra rimossa a breve"
-    )
 
 # -- observation basate sulle properties della session (ctx.session) --
 
@@ -60,3 +55,25 @@ def build_pos_vel_stats(gs, ctx):
         [s.distance / DIST_NORM],
     ])
     return np.clip(feats, -1.0, 1.0).astype(np.float32)
+
+@register_obs("full_v1", spaces.Box(-1.0, 1.0, (32,), np.float32))
+def build_full_v1(gs, ctx):     # da non usare, per ora rimane per non dover cambiare i default altrove
+    raise NotImplementedError(
+        "usa 'pos_vel' o 'pos_vel_stats', questa verra rimossa a breve"
+    )
+
+PERCENT_NORM = 150.0    # tecnicamente è sui 300, ma il grosso della partita avviene sotto al 150%
+MAX_STOCKS = 4.0
+
+@register_obs("pos_vel_facing_state", Box(low=-np.inf, high=np.inf, shape=(18,), dtype=np.float32))  # 12 (pos/vel) + 6
+def _pos_vel_facing_state(gs, ctx):
+    base = _pos_vel_feats(ctx)                     # 12 dim, riusata as-is
+    s = ctx.session
+    ai, oi = ctx.agent_port - 1, ctx.opp_port - 1
+    facing  = s.facings                            # già ±1
+    percent = s.percents / PERCENT_NORM
+    stock   = s.stocks   / MAX_STOCKS
+    extra = np.array([facing[ai],  facing[oi],
+                      percent[ai], percent[oi],
+                      stock[ai],   stock[oi]], dtype=np.float32)
+    return np.concatenate([base, extra])

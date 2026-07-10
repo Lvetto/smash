@@ -615,6 +615,10 @@ class MeleeSession:
             return 0.0
         return gs.distance
 
+    @property
+    def facings(self):
+        return self._player_values(lambda p: 1.0 if p.facing else -1.0)
+
     # -- input controller --
 
     @property

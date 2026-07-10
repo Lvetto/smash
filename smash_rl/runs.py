@@ -148,6 +148,11 @@ def launch(cfg: TrainConfig) -> RunHandle:
                      log_path=log_path, config_path=config_path)
 
 
+def _run_name(run) -> str:
+    """Accetta sia il nome del run sia un'entry di list_runs() (che sono dict)."""
+    return run["run_name"] if isinstance(run, dict) else run
+
+
 def list_runs(all: bool = False) -> list[dict]:
     """Entry del registry (default: solo run vivi), ordinate per run_id."""
     with _locked_registry() as reg:
@@ -159,6 +164,7 @@ def list_runs(all: bool = False) -> list[dict]:
 
 def status(run_name: str) -> dict:
     """Entry del run + liveness attuale + ultima riga di log."""
+    run_name = _run_name(run_name)   # accetta anche un'entry di list_runs()
     with _locked_registry() as reg:
         _reconcile(reg)
         if run_name not in reg["runs"]:
@@ -172,6 +178,7 @@ def status(run_name: str) -> dict:
 
 def tail_log(run_name: str, n: int = 30) -> str:
     """Ultime n righe del log del run (stringa vuota se il log non esiste ancora)."""
+    run_name = _run_name(run_name)   # accetta anche un'entry di list_runs()
     log_path = RUNS_DIR / run_name / "train.log"
     if not log_path.exists():
         return ""
@@ -184,6 +191,7 @@ def stop(run_name: str, timeout_s: float = 30.0) -> None:
     Ferma un run in modo pulito: SIGTERM (il worker salva il modello e chiude i
     Dolphin nel suo finally), poi killpg SIGKILL se non muore entro timeout_s.
     """
+    run_name = _run_name(run_name)   # accetta anche un'entry di list_runs()
     with _locked_registry() as reg:
         _reconcile(reg)
         if run_name not in reg["runs"]:

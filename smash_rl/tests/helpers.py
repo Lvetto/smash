@@ -41,21 +41,23 @@ if "test_one_per_frame" not in REWARD_FNS:
 def make_gs(frame=100, p1_stock=4, p2_stock=4, p1_percent=0.0, p2_percent=0.0,
             p1_pos=(0.0, 0.0), p2_pos=(10.0, 0.0),
             p1_vel=(0.0, 0.0, 0.0, 0.0), p2_vel=(0.0, 0.0, 0.0, 0.0),
+            p1_facing=True, p2_facing=False,
             distance=10.0):
     """
     Gamestate finto con i campi usati da env e specs. Le velocità sono tuple
     (vx_self, vy_self, vx_attack, vy_attack); vx_self finisce nella componente a terra.
+    facing è booleano (True = rivolto a destra), come in libmelee.
     """
-    def player(stock, percent, pos, vel):
+    def player(stock, percent, pos, vel, facing):
         return SimpleNamespace(
-            stock=stock, percent=percent,
+            stock=stock, percent=percent, facing=facing,
             position=SimpleNamespace(x=pos[0], y=pos[1]),
             speed_ground_x_self=vel[0], speed_air_x_self=0.0,
             speed_y_self=vel[1], speed_x_attack=vel[2], speed_y_attack=vel[3],
         )
 
-    players = {1: player(p1_stock, p1_percent, p1_pos, p1_vel),
-               2: player(p2_stock, p2_percent, p2_pos, p2_vel)}
+    players = {1: player(p1_stock, p1_percent, p1_pos, p1_vel, p1_facing),
+               2: player(p2_stock, p2_percent, p2_pos, p2_vel, p2_facing)}
     return SimpleNamespace(frame=frame, players=players, distance=distance,
                            menu_state=melee.Menu.IN_GAME)
 

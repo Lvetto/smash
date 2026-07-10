@@ -50,6 +50,21 @@ def test_registries_expose_default_specs():
     assert "v1" in REWARD_FNS
 
 
+@pytest.mark.parametrize("name", sorted(OBS_SPECS))
+def test_every_obs_spec_accepts_gs_and_ctx(name):
+    # regressione: ogni build va chiamata come build(gs, ctx) (2 argomenti) —
+    # una firma sbagliata crasha in _do_reset e blocca l'intero run in un hang
+    space, build = OBS_SPECS[name]
+    gs = make_gs()
+    ctx = _ctx_with_gamestate(gs)
+    if name == "full_v1":                       # stub deprecato: deve fallire chiaro
+        with pytest.raises(NotImplementedError):
+            build(gs, ctx)
+        return
+    obs = build(gs, ctx)
+    assert obs.shape == space.shape, f"{name}: shape {obs.shape} != {space.shape}"
+
+
 def test_pos_vel_observation():
     space, build = OBS_SPECS["pos_vel"]
     assert space.shape == (12,)
