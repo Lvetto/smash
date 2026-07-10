@@ -197,6 +197,10 @@ class MeleeEnv(gym.Env):
         obs = self._build(gs, self.ctx)
         self._last_obs = obs
 
+        if terminated:   # lascia finalizzare il .slp (GAME_END + metadata) prima che il reset uccida Dolphin
+            self.session.drain_to_game_end(
+                apply_input_fn=lambda: self.session.apply_input(player_idx=self.agent_idx))
+
         truncated = (not terminated) and (self._steps >= self.max_steps)
         return obs, reward, terminated, truncated, info
     

@@ -501,6 +501,28 @@ class MeleeSession:
                 self._in_game_frames += 1
         return gs
 
+    def drain_to_game_end(self, apply_input_fn=None, max_frames: int = 1200,
+                          timeout_s: float = 8.0) -> None:
+        """
+        Dopo la fine di un match, avanza i frame (input neutro) finché la partita
+        esce da IN_GAME. Senza questa attesa l'hard_reset ucciderebbe Dolphin
+        prima che scriva l'evento GAME_END e il blocco metadata del replay,
+        lasciando .slp non finalizzati (raw di lunghezza 0, niente metadata).
+        max_frames/timeout_s limitano l'attesa: timeout_s sta sotto il watchdog
+        di step (12s), altrimenti scatterebbe un SIGKILL che vanifica il drain.
+        """
+        start = time.time()
+        for _ in range(max_frames):
+            if time.time() - start > timeout_s:
+                break
+            if apply_input_fn is not None:
+                apply_input_fn()   # con blocking_input Dolphin aspetta l'input a ogni frame
+            gs = self.step()
+            if gs is None:
+                continue
+            if gs.menu_state != melee.Menu.IN_GAME:
+                break               # schermata post-partita: GAME_END già scritto, replay finalizzato
+
     def _wait_fresh_match(self, timeout: Optional[float] = None) -> bool:
         """
         Attende che gli stock vengano resettati a 4 (nuovo match). Ritorna True se il match è stato resettato, False se timeout.

@@ -2,6 +2,9 @@
 Unit test della logica di MeleeEnv (step, info, truncation, errori recuperabili)
 con FakeSession: nessun Dolphin richiesto.
 """
+from types import SimpleNamespace
+
+import melee
 import numpy as np
 import pytest
 from melee.slippstream import EnetDisconnected
@@ -9,6 +12,11 @@ from melee.slippstream import EnetDisconnected
 import smash_rl.environment
 from smash_rl.specs.context import Ctx
 from smash_rl.tests.helpers import TEST_OBS_SHAPE, FakeSession, make_gs, make_test_env
+
+
+def _postgame_gs():
+    """Gamestate fuori da IN_GAME: segna la fine del drain post-partita."""
+    return SimpleNamespace(menu_state=melee.Menu.POSTGAME_SCORES)
 
 
 class FlakySession(FakeSession):
@@ -136,6 +144,22 @@ def test_info_present_when_match_ends_on_first_frame():
     assert reward == env.win_bonus  # l'avversario è a 0 stock: vittoria
     assert info["P1_stocks"] == 4 and info["P2_stocks"] == 0
     assert info["P1_percent"] == 42.0
+    assert obs.shape == TEST_OBS_SHAPE
+
+
+def test_terminated_drains_to_game_end_before_returning():
+    # bug fix: senza il drain, hard_reset uccideva Dolphin nell'istante della morte
+    # (stock=0), prima dell'evento GAME_END -> .slp non finalizzati (niente metadata)
+    frames = [make_gs(p2_stock=0, p1_percent=42.0), _postgame_gs()]
+    env = make_test_env(frames)
+
+    obs, reward, terminated, truncated, info = env.step(0)
+
+    assert terminated and not truncated
+    assert env.session.frames == [], \
+        "il drain deve consumare il frame post-partita (altrimenti Dolphin verrebbe ucciso troppo presto)"
+    # l'obs/info restituiti restano quelli dell'ultimo frame IN_GAME, non del drain
+    assert info["P1_stocks"] == 4 and info["P2_stocks"] == 0
     assert obs.shape == TEST_OBS_SHAPE
 
 
