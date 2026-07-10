@@ -1,0 +1,27 @@
+{
+  "run_name": null,
+  "algo": "dqn",
+  "policy": "MlpPolicy",
+  "algo_kwargs": {},
+  "n_envs": 4,
+  "total_steps": 3000000,
+  "ckpt_every": 50000,
+  "seed": 0,
+  "boot_stagger_s": 8.0,
+  "instance_base": null,
+  "pretrained_path": "dqn_melee_continuation.zip",
+  "reset_exploration": {
+    "initial_eps": 0.3,
+    "final_eps": 0.05,
+    "fraction": 0.3
+  },
+  "kill_all_dolphins": false,
+  "env_kwargs": {
+    "agent_char": "FOX",
+    "opp_char": "MARTH",
+    "opp_level": 7,
+    "observation_function": "pos_vel",
+    "action_function": "a_only",
+    "reward_function": "v1"
+  }
+}

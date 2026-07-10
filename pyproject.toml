@@ -10,7 +10,9 @@ dependencies = [
     "python-dotenv",
     "PyVirtualDisplay",         # Xvfb per il training headless
     "psutil",
-    "tensorboard",              # per i grafici di train.py (tb_logs/)
+    "tensorboard",              # per i grafici del training (tb_logs/)
+    "opencv-python>=4.9",       # composizione dei video annotati (smash_rl/video/)
+    "matplotlib>=3.8",          # colormap per il pannello di diagnostica
 ]
 
 [project.optional-dependencies]

@@ -1,20 +1,3 @@
-"""
-Gioca in tempo reale contro un agente addestrato.
-
-Prima volta (mappatura del gamepad):
-    python play.py --configure-pad
-Si apre la GUI di Dolphin (build netplay): Options -> Controller Settings -> Port 1
--> Standard Controller -> Configure, mappa il tuo pad, salva e chiudi Dolphin.
-Il mapping viene estratto e salvato in configs/gcpad_human.ini.
-
-Per giocare:
-    python play.py checkpoints/<run>/<checkpoint>.zip
-L'agente è sulla porta 1 e si sceglie da solo nei menu; tu sei sulla porta 2:
-scegli il personaggio col tuo pad e avvia tu la partita. Ctrl-C per uscire.
-
-obs/action spec e frame_skip DEVONO coincidere con quelli usati in addestramento
-(default = quelli di train.py).
-"""
 import argparse
 import configparser
 import os

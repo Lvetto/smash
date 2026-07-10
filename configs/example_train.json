@@ -1,0 +1,33 @@
+{
+  "run_name": null,
+  "algo": "dqn",
+  "policy": "MlpPolicy",
+  "algo_kwargs": {
+    "buffer_size": 500000,
+    "learning_starts": 30000,
+    "train_freq": 1,
+    "gradient_steps": -1,
+    "batch_size": 64,
+    "target_update_interval": 1000,
+    "exploration_fraction": 0.1,
+    "exploration_final_eps": 0.02,
+    "gamma": 0.99
+  },
+  "n_envs": 4,
+  "total_steps": 3000000,
+  "ckpt_every": 50000,
+  "seed": 0,
+  "boot_stagger_s": 8.0,
+  "instance_base": null,
+  "pretrained_path": null,
+  "reset_exploration": null,
+  "kill_all_dolphins": false,
+  "env_kwargs": {
+    "agent_char": "FOX",
+    "opp_char": "MARTH",
+    "opp_level": 7,
+    "observation_function": "pos_vel",
+    "action_function": "a_only",
+    "reward_function": "v1"
+  }
+}
