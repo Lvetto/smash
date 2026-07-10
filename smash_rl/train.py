@@ -24,6 +24,52 @@ ALGOS = {"dqn": DQN, "ppo": PPO}
 _ENUM_KEYS = {"agent_char": melee.Character, "opp_char": melee.Character,
               "stage": melee.Stage}
 
+@dataclass
+class env_config:
+    agent_char: melee.Character = "FOX"
+    opp_char: melee.Character = "MARTH"
+    opp_level: int = 7
+    observation_function: str = "pos_vel"
+    action_function: str = "a_only"
+    reward_function: str = "v1"
+    stage: melee.Stage = "FINAL_DESTINATION"
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+    
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+    
+'''  "algo_kwargs": {
+    "buffer_size": 500000,
+    "learning_starts": 30000,
+    "train_freq": 1,
+    "gradient_steps": -1,
+    "batch_size": 64,
+    "target_update_interval": 1000,
+    "exploration_fraction": 0.1,
+    "exploration_final_eps": 0.02,
+    "gamma": 0.99
+  },'''
+
+@dataclass
+class DQN_config:
+    exploration_initial_eps: float = 1.0
+    exploration_final_eps: float = 0.05
+    exploration_fraction: float = 0.1
+    buffer_size: int = 500_000
+    learning_starts: int = 30_000
+    train_freq: int = 1
+    gradient_steps: int = -1    # -1 = gradient_steps = train_freq
+    batch_size: int = 64
+    target_update_interval: int = 1_000
+    gamma: float = 0.99
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+    
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
 @dataclass
 class TrainConfig:
@@ -52,14 +98,7 @@ class TrainConfig:
     pretrained_path: str | None = None  # .zip da cui riprendere l'addestramento
     reset_exploration: dict | None = None  # solo DQN, con pretrained_path: {"initial_eps", "final_eps", "fraction"}
     kill_all_dolphins: bool = False  # opt-in: pkill globale di dolphin-emu (NO con altri run attivi)
-    env_kwargs: dict = field(default_factory=lambda: dict(
-        agent_char="FOX",
-        opp_char="MARTH",
-        opp_level=7,
-        observation_function="pos_vel",
-        action_function="a_only",
-        reward_function="v1",
-    ))
+    env_kwargs: env_config = field(default_factory=env_config)
 
     def validate(self) -> None:
         if self.algo not in ALGOS:
