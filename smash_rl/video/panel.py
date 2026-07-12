@@ -7,7 +7,7 @@ volta, per campionare la colormap). Sezioni, dall'alto:
 
   - testo: azione greedy, stick+bottone, percent/stock;
   - grafico Q-values su finestra scorrevole (argmax evidenziato);
-  - grafico percent dei due giocatori;
+  - barplot delle Q-value del frame corrente, una barra per azione (ranking);
   - diagramma della rete (colonne di neuroni colorati per attivazione).
 """
 from __future__ import annotations
@@ -60,12 +60,11 @@ class PanelRenderer:
         self.window = qval_window
         self.max_units = max_units_per_column
         self.q_history: deque = deque(maxlen=qval_window)        # array (n_actions,)
-        self.pct_history: deque = deque(maxlen=qval_window)      # (pct_agente, pct_opp)
 
         # ripartizione verticale delle sezioni
         self.y_text = 0
         self.y_qplot = int(height * 0.22)
-        self.y_pctplot = int(height * 0.47)
+        self.y_barplot = int(height * 0.47)
         self.y_net = int(height * 0.68)
         self.margin = 10
 
@@ -115,7 +114,7 @@ class PanelRenderer:
         _put(img, f"{lo:+.2f}", (x1 - 58, y1 - 6), 0.35, _DIM)
 
     def _draw_qplot(self, img, rec) -> None:
-        y0, y1 = self.y_qplot, self.y_pctplot - 8
+        y0, y1 = self.y_qplot, self.y_barplot - 8
         qh = np.array(self.q_history)          # (t, n_actions)
         if qh.size == 0:
             return
@@ -128,14 +127,34 @@ class PanelRenderer:
         self._draw_series(img, y0, y1, [series[a] for a in order],
                           [colors[a] for a in order], title="Q-values")
 
-    def _draw_pctplot(self, img) -> None:
-        y0, y1 = self.y_pctplot, self.y_net - 8
-        ph = np.array(self.pct_history)        # (t, 2)
-        if ph.size == 0:
-            return
-        self._draw_series(img, y0, y1, [ph[:, 0], ph[:, 1]],
-                          [_AGENT_COLOR, _OPP_COLOR],
-                          y_range=(0.0, max(150.0, ph.max())), title="percent")
+    def _draw_action_bars(self, img, rec) -> None:
+        """Barplot delle Q-value del frame corrente: una barra per azione,
+        altezza relativa a [min, max] tra le azioni (ranking), argmax evidenziato."""
+        y0, y1 = self.y_barplot, self.y_net - 8
+        x0, x1 = self.margin, self.w - self.margin
+        cv2.rectangle(img, (x0, y0), (x1, y1), _DIM, 1)
+        _put(img, "azioni (Q-value)", (x0 + 4, y0 + 16), 0.4, _DIM)
+
+        q = rec["q_values"]
+        n = len(q)
+        argmax = rec["action"]
+        lo, hi = float(q.min()), float(q.max())
+        span = max(hi - lo, 1e-6)
+
+        label_gutter = 46   # spazio riservato alle etichette hi/lo, fuori dalle barre
+        bars_x1 = x1 - label_gutter
+        plot_y0, plot_y1 = y0 + 22, y1 - 4
+        plot_h = plot_y1 - plot_y0
+        slot = (bars_x1 - x0 - 4) / n
+        bar_w = max(int(slot * 0.7), 1)
+        for a in range(n):
+            cx = int(x0 + 2 + slot * a + slot / 2)
+            bar_h = int((float(q[a]) - lo) / span * plot_h)
+            color = _ACCENT if a == argmax else _DIM
+            cv2.rectangle(img, (cx - bar_w // 2, plot_y1 - bar_h),
+                          (cx + bar_w // 2, plot_y1), color, -1)
+        _put(img, f"{hi:+.2f}", (bars_x1 + 6, y0 + 16), 0.35, _DIM)
+        _put(img, f"{lo:+.2f}", (bars_x1 + 6, y1 - 6), 0.35, _DIM)
 
     def _column(self, values, norm):
         """Sottocampiona una colonna di attivazioni e la normalizza in [0,1]."""
@@ -183,11 +202,10 @@ class PanelRenderer:
             return img
 
         self.q_history.append(record["q_values"])
-        self.pct_history.append(np.asarray(record["percents"], dtype=np.float32))
 
         self._draw_text(img, record)
         self._draw_qplot(img, record)
-        self._draw_pctplot(img)
+        self._draw_action_bars(img, record)
         if record.get("activations") is not None:
             self._draw_net(img, record)
         return img

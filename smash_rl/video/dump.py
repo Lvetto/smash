@@ -151,7 +151,7 @@ def dump_replay_video(slp_path, out_path=None, *,
                       headless: bool = True,
                       display_size: tuple[int, int] = (960, 720),
                       timeout_s: float | None = None,
-                      end_grace_s: float = 20.0,
+                      end_grace_s: float = 5.0,
                       keep_user_dir: bool = False,
                       template_user_dir: Path | None = None,
                       bitrate_kbps: int = 15000,
@@ -167,8 +167,10 @@ def dump_replay_video(slp_path, out_path=None, *,
         start_frame/end_frame: intervallo di frame replay da riprodurre
             (default: tutta la partita). Utile per clip corte di prova.
         timeout_s: watchdog complessivo (default: 60 + 1.5x la durata attesa).
-        end_grace_s: secondi concessi a Dolphin per uscire dopo il messaggio
-            di fine partita, prima del kill.
+        end_grace_s: rete di sicurezza. Con -b Dolphin esce da solo a fine
+            playback (segnale primario: EOF sullo stdout). Se non lo fa,
+            end_grace_s sono i secondi concessi per chiudere il dump dopo
+            aver raggiunto il frame finale (da CURRENT_FRAME), prima del kill.
         keep_user_dir: tiene la home Dolphin temporanea (per debug).
         template_user_dir: user dir esistente da cui copiare la config di
             partenza (escape hatch se il playback desincronizza con la home vuota).
@@ -233,6 +235,12 @@ def dump_replay_video(slp_path, out_path=None, *,
         watchdog.daemon = True
         watchdog.start()
         grace_timer = None
+        # GAME_END_FRAME/PLAYBACK_END_FRAME sono metadati emessi all'avvio del
+        # playback: dicono DOVE finirà la riproduzione, non che è già finita.
+        # Il progresso reale arriva via CURRENT_FRAME; il segnale primario di
+        # fine resta comunque l'uscita spontanea di Dolphin (EOF sullo stdout,
+        # grazie a -b) letta dal for sotto.
+        target_end = end_frame
         t0 = time.time()
         try:
             for line in proc.stdout:
@@ -244,8 +252,12 @@ def dump_replay_video(slp_path, out_path=None, *,
                 if key == "NO_GAME":
                     _kill_process_tree(proc)
                     raise RuntimeError(f"il playback non ha trovato la partita nel replay {slp_path}")
-                if key in ("GAME_END_FRAME", "PLAYBACK_END_FRAME") and grace_timer is None:
-                    # fine partita: se -b non chiude Dolphin, lo chiudiamo noi
+                if key == "PLAYBACK_END_FRAME" and val is not None:
+                    target_end = val
+                if (key == "CURRENT_FRAME" and val is not None
+                        and val >= target_end and grace_timer is None):
+                    # raggiunto il frame finale: rete di sicurezza nel caso
+                    # -b non chiuda Dolphin da solo dopo aver finito il dump
                     grace_timer = threading.Timer(end_grace_s, _kill_process_tree, args=(proc,))
                     grace_timer.daemon = True
                     grace_timer.start()
