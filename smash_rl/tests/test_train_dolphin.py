@@ -42,6 +42,26 @@ def _dolphin_count():
                if p.info["name"] and "dolphin-emu" in p.info["name"])
 
 
+def _wait_terminated(pid, timeout_s=15.0):
+    """
+    True se il processo è uscito. Un processo terminato ma non ancora raccolto dal
+    padre resta zombie (qui pytest non fa wait() sui figli, come il kernel Jupyter):
+    lo consideriamo morto — è la stessa semantica di runs._is_alive — e lo reaping
+    per non lasciarlo defunct. pid_exists() da solo conterebbe lo zombie come vivo.
+    """
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return True
+    try:
+        proc.wait(timeout=timeout_s)  # se è nostro figlio lo raccoglie; ritorna appena esce
+        return True
+    except psutil.TimeoutExpired:
+        return proc.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
 def test_launch_runs_to_completion():
     run_name = f"pytest_dolphin_{os.getpid()}"
     h = runs.launch(_tiny_cfg(run_name, total_steps=400))
@@ -50,7 +70,7 @@ def test_launch_runs_to_completion():
     assert st["status"] == "finished", runs.tail_log(run_name, n=20)
     from smash_rl.runs import REPO_ROOT
     assert (REPO_ROOT / "checkpoints" / run_name / "final.zip").exists()
-    assert not psutil.pid_exists(h.pid)
+    assert _wait_terminated(h.pid)
 
 
 def test_stop_kills_run_and_its_dolphin():
@@ -66,7 +86,7 @@ def test_stop_kills_run_and_its_dolphin():
 
     runs.stop(run_name, timeout_s=60.0)
 
-    assert not psutil.pid_exists(h.pid)
+    assert _wait_terminated(h.pid)
     assert runs.status(run_name)["status"] == "stopped"
     time.sleep(5)  # lascia morire l'albero di processi
     assert _dolphin_count() == dolphins_before, \

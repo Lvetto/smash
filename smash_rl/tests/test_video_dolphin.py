@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from smash_rl.video import dump_replay_video, extract_frame_records, compose_video
+from smash_rl.video.diagnostics import slp_frame_bounds
 
 pytestmark = pytest.mark.dolphin
 
@@ -23,10 +24,19 @@ def _dolphin_count() -> int:
 
 
 def _find_replay() -> Path:
+    """
+    Primo replay .slp *finalizzato* in REPLAY_DIR. I replay del training sono spesso
+    non finalizzati (raw a lunghezza 0, nessun frame): li scartiamo, altrimenti il dump
+    fallisce su un file senza dati invece di girare su una clip vera.
+    """
     replay_root = Path(os.environ.get("REPLAY_DIR", "replays"))
     for slp in sorted(replay_root.rglob("*.slp")):
+        try:
+            slp_frame_bounds(slp)
+        except (ValueError, OSError):
+            continue  # replay vuoto/non finalizzato: passa al prossimo
         return slp
-    pytest.skip(f"nessun replay .slp in {replay_root}")
+    pytest.skip(f"nessun replay .slp finalizzato in {replay_root}")
 
 
 @pytest.fixture

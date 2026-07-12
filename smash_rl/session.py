@@ -619,6 +619,26 @@ class MeleeSession:
     def facings(self):
         return self._player_values(lambda p: 1.0 if p.facing else -1.0)
 
+    @property
+    def hitstun_frames(self):
+        return self._player_values(lambda p: p.hitstun_frames_left)
+    
+    @property
+    def jumps_left(self):
+        return self._player_values(lambda p: p.jumps_left)
+    
+    @property
+    def on_ground(self):
+        return self._player_values(lambda p: 1.0 if p.on_ground else 0.0)
+    
+    @property
+    def off_stage(self):
+        return self._player_values(lambda p: 1.0 if p.off_stage else 0.0)
+    
+    @property
+    def invulnerable(self):
+        return self._player_values(lambda p: 1.0 if p.invulnerable else 0.0)
+
     # -- input controller --
 
     @property

@@ -61,6 +61,38 @@ def test_run_builds_algo_with_passthrough_kwargs(patched_train, monkeypatch):
         "a fine run i pesi vanno salvati in checkpoints/<run>/final.zip"
 
 
+def test_run_defaults_to_256_256_net_arch(patched_train, monkeypatch):
+    created = {}
+
+    class SpyDQN(DQN):
+        def __init__(self, *args, **kwargs):
+            created.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setitem(train.ALGOS, "dqn", SpyDQN)
+
+    train.run(_cfg())
+
+    assert created["policy_kwargs"] == {"net_arch": [256, 256]}
+
+
+def test_run_lets_algo_kwargs_override_policy_kwargs(patched_train, monkeypatch):
+    created = {}
+
+    class SpyDQN(DQN):
+        def __init__(self, *args, **kwargs):
+            created.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setitem(train.ALGOS, "dqn", SpyDQN)
+
+    custom_policy_kwargs = {"net_arch": [64, 64]}
+    train.run(_cfg(algo_kwargs=dict(buffer_size=100, learning_starts=1000,
+                                    policy_kwargs=custom_policy_kwargs)))
+
+    assert created["policy_kwargs"] == custom_policy_kwargs
+
+
 def test_run_requires_instance_base(patched_train):
     with pytest.raises(ValueError, match="instance_base"):
         train.run(_cfg(instance_base=None))
