@@ -92,3 +92,76 @@ def pos_vel_distances_stats(gs, ctx):
                       stock[ai],   stock[oi],
                       distance, distance], dtype=np.float32)
     return np.concatenate([base, extra])
+
+# observation "completa" che include: posizioni, velocità (tutte e 4), stocks, danni, facing (convertito da bool a float tra -1 e 1),
+#                                     posizione relativa dell'avversario (dx, dy; dx col segno del facing dell'agente), frame rimanenti di hitstun,
+#                                     numero di salti rimanenti, on_ground, off_stage, invulnerable (booleani di stato)
+# costanti per la regolarizzazione (empiriche, basate su un analisi dei replay)
+full_obs_spec_costants = {
+    "norm_x_pos": 100,
+    "norm_y_pos": 50,
+    "norm_x_vel_voluntary": 2,
+    "norm_y_vel_voluntary": 2,
+    "norm_x_vel_knockback": 5,
+    "norm_y_vel_knockback": 5,
+    "norm_percent": 150,
+    "norm_stocks": 4,
+    "norm_hitstun": 50,
+    "norm_jumps": 2,
+}
+
+def _get_full_obs_features(ctx):
+    """Costruisce le features dell'osservazione completa, normalizzate secondo le costanti definite sopra."""
+    s = ctx.session
+    ai, oi = ctx.agent_port - 1, ctx.opp_port - 1
+
+    # Posizioni e velocità normalizzate
+    pos = s.positions / np.array([full_obs_spec_costants["norm_x_pos"], full_obs_spec_costants["norm_y_pos"]])
+    vel = s.velocities / np.array([full_obs_spec_costants["norm_x_vel_voluntary"], full_obs_spec_costants["norm_y_vel_voluntary"],
+                                   full_obs_spec_costants["norm_x_vel_knockback"], full_obs_spec_costants["norm_y_vel_knockback"]])
+
+    # Percentuali e stocks normalizzati
+    percent = s.percents / full_obs_spec_costants["norm_percent"]
+    stock = s.stocks / full_obs_spec_costants["norm_stocks"]
+
+    # facing (la classe session o converte già in ±1)
+    facing = s.facings.astype(np.float32)
+
+    # Posizione relativa dell'avversario (già normalizzata, pos è in unità di norm_x_pos/norm_y_pos)
+    dx = (pos[oi][0] - pos[ai][0]) * facing[ai]   # >0 = avversario davanti
+    dy = pos[oi][1] - pos[ai][1]                   # niente facing sull'asse verticale
+
+    # Hitstun, salti rimanenti e stati booleani
+    hitstun = s.hitstun_frames / full_obs_spec_costants["norm_hitstun"]
+    jumps_remaining = s.jumps_left / full_obs_spec_costants["norm_jumps"]
+    on_ground = s.on_ground.astype(np.float32)
+    off_stage = s.off_stage.astype(np.float32)
+    invulnerable = s.invulnerable.astype(np.float32)
+
+    # Combinazione di tutte le features in un unico array. Gli scalari vanno racchiusi in
+    # un array 1-D (np.array([...])): np.concatenate non accetta scalari 0-D indicizzati
+    # direttamente da array (percent[ai], facing[ai], ecc.) insieme ad array 1-D.
+    scalars_ai = np.array([percent[ai], stock[ai], facing[ai]], dtype=np.float32)
+    scalars_oi = np.array([percent[oi], stock[oi], facing[oi]], dtype=np.float32)
+    shared = np.array([
+        dx, dy, hitstun[ai], hitstun[oi],
+        jumps_remaining[ai], jumps_remaining[oi],
+        on_ground[ai], on_ground[oi],
+        off_stage[ai], off_stage[oi],
+        invulnerable[ai], invulnerable[oi],
+    ], dtype=np.float32)
+
+    features = np.concatenate([
+        pos[ai], vel[ai], scalars_ai,
+        pos[oi], vel[oi], scalars_oi,
+        shared,
+    ])
+
+    return features
+
+@register_obs("full_obs", Box(low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32))
+def build_full_obs(gs, ctx):
+    """Costruisce l'osservazione completa, normalizzata secondo le costanti definite sopra."""
+    features = _get_full_obs_features(ctx)
+    return np.clip(features, -2.0, 2.0).astype(np.float32)  # le normalizzazioni sono per lo più 95esimi percentili, quindi +-2 dovrebbe bastare
+

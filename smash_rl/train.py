@@ -39,18 +39,6 @@ class env_config:
     
     def get(self, key, default=None):
         return getattr(self, key, default)
-    
-'''  "algo_kwargs": {
-    "buffer_size": 500000,
-    "learning_starts": 30000,
-    "train_freq": 1,
-    "gradient_steps": -1,
-    "batch_size": 64,
-    "target_update_interval": 1000,
-    "exploration_fraction": 0.1,
-    "exploration_final_eps": 0.02,
-    "gamma": 0.99
-  },'''
 
 @dataclass
 class DQN_config:
@@ -184,7 +172,6 @@ def run(cfg: TrainConfig) -> None:
         print(f"Carico il modello preaddestrato da {cfg.pretrained_path}", flush=True)
         model = algo_cls.load(cfg.pretrained_path, env=venv, tensorboard_log="./tb_logs/")
         if cfg.reset_exploration:
-            # riparte con una policy già sensata: si abbassa l'esplorazione iniziale
             model.exploration_initial_eps = cfg.reset_exploration["initial_eps"]
             model.exploration_final_eps = cfg.reset_exploration["final_eps"]
             model.exploration_fraction = cfg.reset_exploration["fraction"]
@@ -194,9 +181,10 @@ def run(cfg: TrainConfig) -> None:
                 model.exploration_fraction,
             )
     else:
+        algo_kwargs = dict(cfg.algo_kwargs)
+        algo_kwargs.setdefault("policy_kwargs", {"net_arch": [256, 256]})
         model = algo_cls(cfg.policy, venv, tensorboard_log="./tb_logs/", verbose=1,
-                         **cfg.algo_kwargs)
-
+                         **algo_kwargs)
     ckpt_dir = Path("checkpoints") / cfg.run_name
     callbacks = [EpisodeMetricsCallback()]
     if cfg.ckpt_every > 0:
