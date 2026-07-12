@@ -66,7 +66,7 @@ PERCENT_NORM = 150.0    # tecnicamente è sui 300, ma il grosso della partita av
 MAX_STOCKS = 4.0
 
 @register_obs("pos_vel_facing_state", Box(low=-np.inf, high=np.inf, shape=(18,), dtype=np.float32))  # 12 (pos/vel) + 6
-def _pos_vel_facing_state(gs, ctx):
+def pos_vel_facing_state(gs, ctx):
     base = _pos_vel_feats(ctx)                     # 12 dim, riusata as-is
     s = ctx.session
     ai, oi = ctx.agent_port - 1, ctx.opp_port - 1
@@ -76,4 +76,19 @@ def _pos_vel_facing_state(gs, ctx):
     extra = np.array([facing[ai],  facing[oi],
                       percent[ai], percent[oi],
                       stock[ai],   stock[oi]], dtype=np.float32)
+    return np.concatenate([base, extra])
+
+@register_obs("pos_vel_distances_stats", Box(low=-np.inf, high=np.inf, shape=(20,), dtype=np.float32))  # 12 (pos/vel) + 8
+def pos_vel_distances_stats(gs, ctx):
+    base = _pos_vel_feats(ctx)                     # 12 dim, riusata as-is
+    s = ctx.session
+    ai, oi = ctx.agent_port - 1, ctx.opp_port - 1
+    facing  = s.facings                            # già ±1
+    percent = s.percents / PERCENT_NORM
+    stock   = s.stocks   / MAX_STOCKS
+    distance = s.distance / DIST_NORM
+    extra = np.array([facing[ai],  facing[oi],
+                      percent[ai], percent[oi],
+                      stock[ai],   stock[oi],
+                      distance, distance], dtype=np.float32)
     return np.concatenate([base, extra])
