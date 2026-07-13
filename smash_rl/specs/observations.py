@@ -8,22 +8,36 @@ PCT_NORM = 300.0
 DIST_NORM = 100.0
 
 OBS_SPECS = {}
+# nomi (brevi) delle feature, paralleli a OBS_SPECS e nello stesso ordine della
+# concatenazione prodotta da ciascuna build function. Usati dal pannello dei
+# video per etichettare i neuroni di input. "ag" = agente, "av" = avversario.
+OBS_FEATURE_NAMES = {}
+
+# blocchi riutilizzati: pos (x, y) + vel (voluntary x/y, knockback x/y) per giocatore
+_POS_VEL_NAMES = [
+    "x ag", "y ag", "vx ag", "vy ag", "vx kb ag", "vy kb ag",
+    "x av", "y av", "vx av", "vy av", "vx kb av", "vy kb av",
+]
 
 # decoratore che registra una funzione di costruzione delle osservazioni, assegnandole un nome nel dizionario OBS_SPECS
-def register_obs(name, space):
+def register_obs(name, space, feature_names=None):
     """
     Decoratore che registra una funzione di costruzione delle osservazioni, assegnandole un nome nel dizionario OBS_SPECS.
 
     Args:
         name (str): Il nome dell'osservazione da registrare.
         space (gymnasium.spaces.Space): Lo spazio delle osservazioni corrispondente.
-    
+        feature_names (list[str] | None): nomi delle feature, uno per dimensione,
+            nell'ordine di concatenazione (per etichettare i neuroni nel pannello).
+
     Returns:
         function: La funzione decorata che costruisce le osservazioni.
     """
 
     def deco(fn):
         OBS_SPECS[name] = (space, fn)
+        if feature_names is not None:
+            OBS_FEATURE_NAMES[name] = list(feature_names)
         return fn
     return deco
 
@@ -37,12 +51,13 @@ def _pos_vel_feats(ctx):
     ai, oi = ctx.agent_port - 1, ctx.opp_port - 1              # porta (da 1) -> indice (da 0)
     return np.concatenate([pos[ai], vel[ai], pos[oi], vel[oi]])
 
-@register_obs("pos_vel", spaces.Box(-1.0, 1.0, (12,), np.float32))
+@register_obs("pos_vel", spaces.Box(-1.0, 1.0, (12,), np.float32), _POS_VEL_NAMES)
 def build_pos_vel(gs, ctx):
     """Solo posizioni e velocità dei due giocatori: 2 * (2 pos + 4 vel) = 12 feature."""
     return np.clip(_pos_vel_feats(ctx), -1.0, 1.0).astype(np.float32)
 
-@register_obs("pos_vel_stats", spaces.Box(-1.0, 1.0, (17,), np.float32))
+@register_obs("pos_vel_stats", spaces.Box(-1.0, 1.0, (17,), np.float32),
+              _POS_VEL_NAMES + ["% ag", "stock ag", "% av", "stock av", "dist"])
 def build_pos_vel_stats(gs, ctx):
     """Posizioni, velocità, danni, vite e distanza: 2 * (2 pos + 4 vel + 1 danno + 1 vite) + 1 distanza = 17 feature."""
     s = ctx.session
@@ -65,7 +80,8 @@ def build_full_v1(gs, ctx):     # da non usare, per ora rimane per non dover cam
 PERCENT_NORM = 150.0    # tecnicamente è sui 300, ma il grosso della partita avviene sotto al 150%
 MAX_STOCKS = 4.0
 
-@register_obs("pos_vel_facing_state", Box(low=-np.inf, high=np.inf, shape=(18,), dtype=np.float32))  # 12 (pos/vel) + 6
+@register_obs("pos_vel_facing_state", Box(low=-np.inf, high=np.inf, shape=(18,), dtype=np.float32),  # 12 (pos/vel) + 6
+              _POS_VEL_NAMES + ["facing ag", "facing av", "% ag", "% av", "stock ag", "stock av"])
 def pos_vel_facing_state(gs, ctx):
     base = _pos_vel_feats(ctx)                     # 12 dim, riusata as-is
     s = ctx.session
@@ -78,7 +94,9 @@ def pos_vel_facing_state(gs, ctx):
                       stock[ai],   stock[oi]], dtype=np.float32)
     return np.concatenate([base, extra])
 
-@register_obs("pos_vel_distances_stats", Box(low=-np.inf, high=np.inf, shape=(20,), dtype=np.float32))  # 12 (pos/vel) + 8
+@register_obs("pos_vel_distances_stats", Box(low=-np.inf, high=np.inf, shape=(20,), dtype=np.float32),  # 12 (pos/vel) + 8
+              _POS_VEL_NAMES + ["facing ag", "facing av", "% ag", "% av",
+                                "stock ag", "stock av", "dist", "dist"])
 def pos_vel_distances_stats(gs, ctx):
     base = _pos_vel_feats(ctx)                     # 12 dim, riusata as-is
     s = ctx.session
@@ -159,7 +177,17 @@ def _get_full_obs_features(ctx):
 
     return features
 
-@register_obs("full_obs", Box(low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32))
+_FULL_OBS_NAMES = [
+    # agente: pos, vel, %, stock, facing
+    "x ag", "y ag", "vx ag", "vy ag", "vx kb ag", "vy kb ag", "% ag", "stock ag", "facing ag",
+    # avversario: idem
+    "x av", "y av", "vx av", "vy av", "vx kb av", "vy kb av", "% av", "stock av", "facing av",
+    # condivise
+    "dx rel", "dy rel", "hitstun ag", "hitstun av", "salti ag", "salti av",
+    "terra ag", "terra av", "fuori ag", "fuori av", "invuln ag", "invuln av",
+]
+
+@register_obs("full_obs", Box(low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32), _FULL_OBS_NAMES)
 def build_full_obs(gs, ctx):
     """Costruisce l'osservazione completa, normalizzata secondo le costanti definite sopra."""
     features = _get_full_obs_features(ctx)

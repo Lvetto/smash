@@ -14,6 +14,7 @@ write_calibration_video).
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from smash_rl.specs.actions import ACT_LABELS, ACT_LAYOUTS
+from smash_rl.specs.observations import OBS_FEATURE_NAMES
 from smash_rl.video.dump import PlaybackDumpResult, dump_replay_video
 from smash_rl.video.panel import PanelRenderer
 
@@ -30,6 +33,24 @@ def replay_frame_for_video_index(i: int, video_frames: int, end_frame: int,
                                  frame_offset: int = 0) -> int:
     """Frame replay corrispondente al frame video i, ancorando alla fine."""
     return end_frame - (video_frames - 1 - i) + frame_offset
+
+
+def specs_for_replay(slp_path, runs_dir="runs") -> tuple[str | None, str | None]:
+    """
+    (obs_name, act_name) della run che ha prodotto il replay, letti dal suo config.
+
+    I replay stanno in replays/<run>/instance_N/*.slp; la run corrispondente ha
+    runs/<run>/config.json con env_kwargs.observation_function/action_function.
+    Risale i parent del path finché trova un runs/<name>/config.json; ritorna
+    (None, None) se non lo trova (config assente o layout non standard).
+    """
+    slp_path = Path(slp_path)
+    for parent in slp_path.parents:
+        config_path = Path(runs_dir) / parent.name / "config.json"
+        if config_path.is_file():
+            env = json.loads(config_path.read_text()).get("env_kwargs", {})
+            return env.get("observation_function"), env.get("action_function")
+    return None, None
 
 
 def _open_video(video: Path):
@@ -69,6 +90,8 @@ def _mux_audio(video_only: Path, audio_source: Path, out_path: Path) -> None:
 
 
 def compose_video(dump, records: dict[int, dict], out_path, *,
+                  obs_name: str | None = None,
+                  act_name: str | None = None,
                   frame_offset: int | None = None,
                   panel_width: int = 480,
                   qval_window: int = 180,
@@ -85,6 +108,9 @@ def compose_video(dump, records: dict[int, dict], out_path, *,
             quel caso l'allineamento assume che il video finisca sull'ultimo
             frame dei records).
         records: output di extract_frame_records sullo stesso replay.
+        obs_name/act_name: nomi delle spec usate per generare i records; servono
+            a etichettare i neuroni di input e la griglia/nome delle azioni nel
+            pannello. None = pannello non etichettato (compatibilità).
         frame_offset: correzione manuale all'allineamento (None = 0, cioè solo
             l'ancoraggio automatico alla fine; tararla con write_calibration_video).
         start_frame/end_frame: limita l'output a un intervallo di frame replay
@@ -101,7 +127,10 @@ def compose_video(dump, records: dict[int, dict], out_path, *,
     cap, w, h, fps, n_video = _open_video(dump.video)
     n_video = min(n_video, dump.video_frames) or dump.video_frames
     renderer = PanelRenderer(h, panel_width, qval_window=qval_window,
-                             max_units_per_column=max_units_per_column)
+                             max_units_per_column=max_units_per_column,
+                             obs_labels=OBS_FEATURE_NAMES.get(obs_name) if obs_name else None,
+                             act_labels=ACT_LABELS.get(act_name) if act_name else None,
+                             act_layout=ACT_LAYOUTS.get(act_name) if act_name else None)
 
     tmp = Path(tempfile.mkstemp(suffix=".mp4", prefix="smash_compose_")[1])
     writer = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"),
@@ -189,5 +218,5 @@ def replay_to_annotated_video(slp_path, model_path, out_path, *,
     dump = dump_replay_video(slp_path, **(dump_kwargs or {}))
     records = extract_frame_records(slp_path, model_path,
                                     obs_name=obs_name, act_name=act_name)
-    return compose_video(dump, records, out_path,
+    return compose_video(dump, records, out_path, obs_name=obs_name, act_name=act_name,
                          frame_offset=frame_offset, **compose_kwargs)

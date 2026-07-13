@@ -47,13 +47,17 @@ def make_gs(frame=100, p1_stock=4, p2_stock=4, p1_percent=0.0, p2_percent=0.0,
             p1_on_ground=True, p2_on_ground=True,
             p1_off_stage=False, p2_off_stage=False,
             p1_invulnerable=False, p2_invulnerable=False,
+            p1_action=melee.Action.STANDING, p2_action=melee.Action.STANDING,
+            p1_character=melee.Character.FOX, p2_character=melee.Character.FOX,
             distance=10.0):
     """
     Gamestate finto con i campi usati da env e specs. Le velocità sono tuple
     (vx_self, vy_self, vx_attack, vy_attack); vx_self finisce nella componente a terra.
-    facing è booleano (True = rivolto a destra), come in libmelee.
+    facing è booleano (True = rivolto a destra), come in libmelee. action/character
+    (default STANDING/FOX) servono a reward_v3 per classificare gli attacchi.
     """
-    def player(stock, percent, pos, vel, facing, hitstun, jumps, on_ground, off_stage, invulnerable):
+    def player(stock, percent, pos, vel, facing, hitstun, jumps, on_ground, off_stage,
+               invulnerable, action, character):
         return SimpleNamespace(
             stock=stock, percent=percent, facing=facing,
             position=SimpleNamespace(x=pos[0], y=pos[1]),
@@ -61,12 +65,15 @@ def make_gs(frame=100, p1_stock=4, p2_stock=4, p1_percent=0.0, p2_percent=0.0,
             speed_y_self=vel[1], speed_x_attack=vel[2], speed_y_attack=vel[3],
             hitstun_frames_left=hitstun, jumps_left=jumps,
             on_ground=on_ground, off_stage=off_stage, invulnerable=invulnerable,
+            action=action, character=character,
         )
 
     players = {1: player(p1_stock, p1_percent, p1_pos, p1_vel, p1_facing,
-                        p1_hitstun, p1_jumps, p1_on_ground, p1_off_stage, p1_invulnerable),
+                        p1_hitstun, p1_jumps, p1_on_ground, p1_off_stage, p1_invulnerable,
+                        p1_action, p1_character),
                2: player(p2_stock, p2_percent, p2_pos, p2_vel, p2_facing,
-                        p2_hitstun, p2_jumps, p2_on_ground, p2_off_stage, p2_invulnerable)}
+                        p2_hitstun, p2_jumps, p2_on_ground, p2_off_stage, p2_invulnerable,
+                        p2_action, p2_character)}
     return SimpleNamespace(frame=frame, players=players, distance=distance,
                            menu_state=melee.Menu.IN_GAME)
 

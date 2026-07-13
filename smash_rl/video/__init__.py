@@ -18,7 +18,7 @@ Oppure a passi separati (utile per iterare sul pannello senza rifare il dump):
 from smash_rl.video.diagnostics import extract_frame_records, slp_frame_bounds
 from smash_rl.video.dump import PlaybackDumpResult, dump_replay_video
 from smash_rl.video.compose import (compose_video, replay_to_annotated_video,
-                                    write_calibration_video)
+                                    specs_for_replay, write_calibration_video)
 
 __all__ = [
     "PlaybackDumpResult",
@@ -28,4 +28,5 @@ __all__ = [
     "compose_video",
     "write_calibration_video",
     "replay_to_annotated_video",
+    "specs_for_replay",
 ]

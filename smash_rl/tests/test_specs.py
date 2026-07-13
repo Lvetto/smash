@@ -233,6 +233,59 @@ def test_reward_v2_edge_cases():
     assert reward(make_gs(p2_stock=1), make_gs(p2_stock=4), ctx) == 0.0
 
 
+def test_reward_v3_equals_v2_without_attack_edge():
+    v2, v3 = REWARD_FNS["v2"], REWARD_FNS["v3"]
+    ctx = Ctx(agent_port=1, opp_port=2)
+
+    # nessuna transizione d'attacco (entrambi STANDING): v3 == v2, danni/stock inclusi
+    prev = make_gs()
+    gs = make_gs(p2_percent=10.0, p1_stock=3)
+    assert v3(prev, gs, ctx) == pytest.approx(v2(prev, gs, ctx))
+
+    # attacco che continua (prev e curr entrambi NAIR): nessun edge, niente penalità extra
+    prev_atk = make_gs(p1_action=melee.Action.NAIR)
+    gs_atk = make_gs(p1_action=melee.Action.NAIR, p2_percent=10.0)
+    assert v3(prev_atk, gs_atk, ctx) == pytest.approx(v2(prev_atk, gs_atk, ctx))
+
+
+def test_reward_v3_penalizes_attack_start():
+    v2, v3 = REWARD_FNS["v2"], REWARD_FNS["v3"]
+    ctx = Ctx(agent_port=1, opp_port=2)
+
+    # l'agente entra in un attacco (STANDING -> NAIR): v3 = v2 - 0.001
+    prev = make_gs(p1_action=melee.Action.STANDING)
+    gs = make_gs(p1_action=melee.Action.NAIR)
+    assert v3(prev, gs, ctx) == pytest.approx(v2(prev, gs, ctx) - 0.001)
+
+    # la penalità si somma al reward di danno dello stesso frame
+    gs_dmg = make_gs(p1_action=melee.Action.NAIR, p2_percent=10.0)
+    assert v3(prev, gs_dmg, ctx) == pytest.approx(0.01 - 0.001)
+
+    # anche un grab conta come attacco (grab inclusi)
+    gs_grab = make_gs(p1_action=melee.Action.GRAB)
+    assert v3(prev, gs_grab, ctx) == pytest.approx(v2(prev, gs_grab, ctx) - 0.001)
+
+
+def test_reward_v3_ignores_opponent_attack():
+    v2, v3 = REWARD_FNS["v2"], REWARD_FNS["v3"]
+    ctx = Ctx(agent_port=1, opp_port=2)
+
+    # un attacco dell'avversario non penalizza l'agente
+    prev = make_gs(p2_action=melee.Action.STANDING)
+    gs = make_gs(p2_action=melee.Action.NAIR)
+    assert v3(prev, gs, ctx) == pytest.approx(v2(prev, gs, ctx))
+
+
+def test_reward_v3_edge_cases():
+    v3 = REWARD_FNS["v3"]
+    ctx = Ctx(agent_port=1, opp_port=2)
+
+    # niente reward (né penalità) senza stato precedente o durante il countdown,
+    # anche se il frame corrente è già in un attacco
+    assert v3(None, make_gs(p1_action=melee.Action.NAIR), ctx) == 0.0
+    assert v3(make_gs(), make_gs(frame=-20, p1_action=melee.Action.NAIR), ctx) == 0.0
+
+
 def test_session_properties_from_gamestate():
     session = FakeSession([])  # eredita le properties vere di MeleeSession
 

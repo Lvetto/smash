@@ -5,10 +5,15 @@ Tutto disegnato con primitive opencv: a 60 record al secondo matplotlib
 costerebbe ~15 ms/frame contro <1 ms di cv2 (matplotlib viene usato solo una
 volta, per campionare la colormap). Sezioni, dall'alto:
 
-  - testo: azione greedy, stick+bottone, percent/stock;
+  - controller: sagoma GameCube con stick e bottone dell'azione greedy evidenziati;
   - grafico Q-values su finestra scorrevole (argmax evidenziato);
-  - barplot delle Q-value del frame corrente, una barra per azione (ranking);
-  - diagramma della rete (colonne di neuroni colorati per attivazione).
+  - griglia delle Q-value del frame corrente (righe = stick, colonne = bottoni);
+  - diagramma della rete (colonne di neuroni colorati per attivazione), con i
+    nomi delle feature sugli input e l'etichetta dell'azione sull'argmax.
+
+Le etichette (nomi feature, layout azioni) sono opzionali: se non fornite al
+costruttore il pannello ripiega su un rendering non etichettato (barplot delle
+azioni, neuroni anonimi), così i vecchi call site continuano a funzionare.
 """
 from __future__ import annotations
 
@@ -30,13 +35,6 @@ _OPP_COLOR = (80, 100, 235)     # rosso
 _ACCENT = (60, 200, 255)        # giallo/arancio
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
-_STICK_NAMES = {
-    (0.5, 0.5): "neutro", (0.5, 1.0): "su", (0.5, 0.0): "giu",
-    (0.0, 0.5): "sinistra", (1.0, 0.5): "destra",
-    (0.0, 1.0): "su-sx", (1.0, 1.0): "su-dx",
-    (0.0, 0.0): "giu-sx", (1.0, 0.0): "giu-dx",
-}
-
 
 def _color(v: float) -> tuple:
     """v in [0,1] -> colore BGR dalla LUT viridis."""
@@ -52,45 +50,104 @@ class PanelRenderer:
     """
     Disegna il pannello frame per frame. Tiene internamente la storia per i
     grafici scorrevoli: chiamare render() in ordine di frame.
+
+    Args:
+        height, width: dimensioni del pannello (height = altezza del video).
+        obs_labels: nomi delle feature di input (uno per dimensione dell'obs),
+            per etichettare i neuroni di input; None = neuroni anonimi.
+        act_labels: nome per azione (es. "giu + B"), per l'azione corrente e
+            l'argmax nel diagramma; None = "azione N".
+        act_layout: {"stick_labels": [...], "button_labels": [...]} per la
+            griglia azioni (righe = stick, colonne = bottoni); None = barplot.
     """
 
     def __init__(self, height: int, width: int = 480, *,
-                 qval_window: int = 180, max_units_per_column: int = 32):
+                 qval_window: int = 180, max_units_per_column: int = 32,
+                 obs_labels: list | None = None,
+                 act_labels: list | None = None,
+                 act_layout: dict | None = None):
         self.h, self.w = height, width
         self.window = qval_window
         self.max_units = max_units_per_column
         self.q_history: deque = deque(maxlen=qval_window)        # array (n_actions,)
 
+        self.obs_labels = obs_labels
+        self.act_labels = act_labels
+        self.act_layout = act_layout
+
         # ripartizione verticale delle sezioni
-        self.y_text = 0
-        self.y_qplot = int(height * 0.22)
-        self.y_barplot = int(height * 0.47)
-        self.y_net = int(height * 0.68)
+        self.y_controller = 0
+        self.y_qplot = int(height * 0.20)
+        self.y_grid = int(height * 0.42)
+        self.y_net = int(height * 0.62)
         self.margin = 10
+
+    # -- helper etichette --
+
+    def _act_label(self, action: int) -> str:
+        if self.act_labels is not None and 0 <= action < len(self.act_labels):
+            return self.act_labels[action]
+        return f"azione {action}"
 
     # -- sezioni --
 
-    def _draw_text(self, img, rec) -> None:
-        x, y = self.margin, self.y_text + 22
-        stick, button = rec["stick"], rec["button"]
-        stick_name = _STICK_NAMES.get(tuple(stick), str(stick))
-        btn_name = button.name.replace("BUTTON_", "") if button is not None else "-"
-        _put(img, f"azione {rec['action']}: stick {stick_name}  bottone {btn_name}",
-             (x, y), 0.5, _ACCENT)
-        _put(img, f"maxQ {rec['q_values'].max():+.3f}", (x, y + 22), 0.45)
-        _put(img, f"agente  {rec['percents'][0]:5.1f}%  stock {int(rec['stocks'][0])}",
-             (x, y + 44), 0.45, _AGENT_COLOR)
-        _put(img, f"avvers. {rec['percents'][1]:5.1f}%  stock {int(rec['stocks'][1])}",
-             (x, y + 66), 0.45, _OPP_COLOR)
+    def _draw_button(self, img, label, center, radius, pressed) -> None:
+        """Bottone della sagoma: pieno _ACCENT se premuto, altrimenti contorno _DIM."""
+        cx, cy = center
+        on = (label == pressed)
+        if on:
+            cv2.circle(img, (cx, cy), radius, _ACCENT, -1, cv2.LINE_AA)
+        else:
+            cv2.circle(img, (cx, cy), radius, _DIM, 1, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, _FONT, 0.4, 1)
+        _put(img, label, (cx - tw // 2, cy + th // 2), 0.4, _BG if on else _DIM)
 
-        # mini-box con la posizione dello stick
-        box = 60
-        bx, by = self.w - box - self.margin, self.y_text + 12
-        cv2.rectangle(img, (bx, by), (bx + box, by + box), _DIM, 1)
-        sx = int(bx + stick[0] * box)
-        sy = int(by + (1.0 - stick[1]) * box)   # y dello stick: 1.0 = su
-        cv2.circle(img, (bx + box // 2, by + box // 2), 2, _DIM, -1)
-        cv2.circle(img, (sx, sy), 5, _ACCENT, -1)
+    def _draw_trigger(self, img, label, box, pressed) -> None:
+        """Trigger/dorsale (L, Z) come rettangolino in alto."""
+        x0, y0, x1, y1 = box
+        on = (label == pressed)
+        cv2.rectangle(img, (x0, y0), (x1, y1), _ACCENT if on else _DIM, -1 if on else 1)
+        (tw, th), _ = cv2.getTextSize(label, _FONT, 0.4, 1)
+        _put(img, label, ((x0 + x1) // 2 - tw // 2, (y0 + y1) // 2 + th // 2),
+             0.4, _BG if on else _DIM)
+
+    def _draw_controller(self, img, rec) -> None:
+        """Sagoma GameCube: stick analogico (posizione corrente) + cluster bottoni."""
+        stick = rec["stick"]
+        button = rec["button"]
+        pressed = button.name.replace("BUTTON_", "") if button is not None else None
+
+        top, bottom = self.y_controller + 2, self.y_qplot - 20
+
+        # dorsali in alto: L a sinistra, Z a destra
+        self._draw_trigger(img, "L", (self.margin, top, self.margin + 70, top + 18), pressed)
+        self._draw_trigger(img, "Z", (self.w - self.margin - 70, top,
+                                       self.w - self.margin, top + 18), pressed)
+
+        body_top = top + 26
+        cy = (body_top + bottom) // 2
+
+        # stick analogico (sinistra): gate ottagonale + posizione corrente
+        gate_cx = self.margin + 55
+        rg = max(min(42, (bottom - body_top) // 2 - 2), 12)
+        oct_pts = [(int(gate_cx + rg * np.cos(np.pi / 8 + k * np.pi / 4)),
+                    int(cy - rg * np.sin(np.pi / 8 + k * np.pi / 4))) for k in range(8)]
+        cv2.polylines(img, [np.array(oct_pts, np.int32)], True, _DIM, 1, cv2.LINE_AA)
+        cv2.circle(img, (gate_cx, cy), 3, _DIM, -1)
+        sx = int(gate_cx + (stick[0] - 0.5) * 2 * rg)   # x: 0=sx, 1=dx
+        sy = int(cy - (stick[1] - 0.5) * 2 * rg)        # y: 1=su (schermo invertito)
+        cv2.line(img, (gate_cx, cy), (sx, sy), _ACCENT, 1, cv2.LINE_AA)
+        cv2.circle(img, (sx, sy), 7, _ACCENT, -1, cv2.LINE_AA)
+
+        # cluster bottoni (destra): A grande al centro, B/X/Y attorno
+        bcx, bcy, u = self.w - 100, cy, 15
+        self._draw_button(img, "A", (bcx, bcy), int(1.2 * u), pressed)
+        self._draw_button(img, "B", (bcx - int(1.5 * u), bcy + int(0.7 * u)), int(0.7 * u), pressed)
+        self._draw_button(img, "X", (bcx + int(1.4 * u), bcy - int(0.2 * u)), int(0.7 * u), pressed)
+        self._draw_button(img, "Y", (bcx + int(0.2 * u), bcy - int(1.5 * u)), int(0.7 * u), pressed)
+
+        # nome dell'azione corrente sotto la sagoma
+        _put(img, self._act_label(rec["action"]), (self.margin, bottom + 15), 0.5, _ACCENT)
 
     def _draw_series(self, img, y0, y1, series, colors, *, y_range=None, title=""):
         """Polilinee su finestra scorrevole. series: lista di array (t,)."""
@@ -114,7 +171,7 @@ class PanelRenderer:
         _put(img, f"{lo:+.2f}", (x1 - 58, y1 - 6), 0.35, _DIM)
 
     def _draw_qplot(self, img, rec) -> None:
-        y0, y1 = self.y_qplot, self.y_barplot - 8
+        y0, y1 = self.y_qplot, self.y_grid - 8
         qh = np.array(self.q_history)          # (t, n_actions)
         if qh.size == 0:
             return
@@ -127,10 +184,50 @@ class PanelRenderer:
         self._draw_series(img, y0, y1, [series[a] for a in order],
                           [colors[a] for a in order], title="Q-values")
 
+    def _draw_action_grid(self, img, rec) -> None:
+        """Griglia delle Q-value del frame corrente: righe = direzioni stick,
+        colonne = bottoni; colore per Q normalizzata a [min, max], argmax evidenziato."""
+        y0, y1 = self.y_grid, self.y_net - 8
+        x0, x1 = self.margin, self.w - self.margin
+        _put(img, "azioni (Q-value)", (x0 + 4, y0 + 14), 0.4, _DIM)
+
+        stick_labels = self.act_layout["stick_labels"]
+        button_labels = self.act_layout["button_labels"]
+        n_rows, n_cols = len(stick_labels), len(button_labels)
+
+        q = rec["q_values"]
+        argmax = rec["action"]
+        lo, hi = float(q.min()), float(q.max())
+        span = max(hi - lo, 1e-6)
+
+        row_gutter = 44        # etichette righe (direzioni stick)
+        grid_x0 = x0 + row_gutter
+        grid_y0 = y0 + 34      # titolo + header colonne
+        cell_w = (x1 - grid_x0) / n_cols
+        cell_h = (y1 - grid_y0) / n_rows
+
+        # header colonne (bottoni)
+        for c, blab in enumerate(button_labels):
+            cx = int(grid_x0 + cell_w * (c + 0.5))
+            (tw, _), _ = cv2.getTextSize(blab, _FONT, 0.35, 1)
+            _put(img, blab, (cx - tw // 2, grid_y0 - 4), 0.35, _DIM)
+
+        for r, slab in enumerate(stick_labels):
+            ry = int(grid_y0 + cell_h * (r + 0.5))
+            _put(img, slab, (x0 + 2, ry + 4), 0.32, _DIM)
+            for c in range(n_cols):
+                action = r * n_cols + c   # come divmod(action, n_b): s_idx=r, b_idx=c
+                v = (float(q[action]) - lo) / span
+                cx0, cy0 = int(grid_x0 + cell_w * c) + 1, int(grid_y0 + cell_h * r) + 1
+                cx1, cy1 = int(grid_x0 + cell_w * (c + 1)) - 1, int(grid_y0 + cell_h * (r + 1)) - 1
+                cv2.rectangle(img, (cx0, cy0), (cx1, cy1), _color(v), -1)
+                if action == argmax:
+                    cv2.rectangle(img, (cx0, cy0), (cx1, cy1), _ACCENT, 2)
+
     def _draw_action_bars(self, img, rec) -> None:
-        """Barplot delle Q-value del frame corrente: una barra per azione,
-        altezza relativa a [min, max] tra le azioni (ranking), argmax evidenziato."""
-        y0, y1 = self.y_barplot, self.y_net - 8
+        """Fallback senza layout: barplot delle Q-value del frame corrente, una
+        barra per azione, altezza relativa a [min, max] (ranking), argmax evidenziato."""
+        y0, y1 = self.y_grid, self.y_net - 8
         x0, x1 = self.margin, self.w - self.margin
         cv2.rectangle(img, (x0, y0), (x1, y1), _DIM, 1)
         _put(img, "azioni (Q-value)", (x0 + 4, y0 + 16), 0.4, _DIM)
@@ -166,26 +263,43 @@ class PanelRenderer:
 
     def _draw_net(self, img, rec) -> None:
         y0, y1 = self.y_net, self.h - self.margin
-        _put(img, "rete (attivazioni)", (self.margin + 4, y0 + 16), 0.4, _DIM)
-        y0 += 22
+        _put(img, "rete (attivazioni)", (self.margin + 4, y0 + 14), 0.4, _DIM)
+        top = y0 + 22
 
-        # colonne: obs in [-1,1] -> [0,1]; hidden ReLU con tanh; Q normalizzati
-        cols = [self._column(rec["obs"], lambda v: (v + 1.0) / 2.0)]
-        for act in (rec["activations"] or []):
-            cols.append(self._column(act, lambda v: np.tanh(v / 2.0)))
-        q = rec["q_values"]
-        cols.append(self._column(q, lambda v: (v - v.min()) / max(np.ptp(v), 1e-6)))
+        # colonne: input (con label), hidden (sottocampionate), output (tutte le azioni)
+        obs = np.asarray(rec["obs"], dtype=np.float32)
+        input_col = self._column(obs, lambda v: (v + 1.0) / 2.0)
+        hidden_cols = [self._column(a, lambda v: np.tanh(v / 2.0))
+                       for a in (rec["activations"] or [])]
+        q = np.asarray(rec["q_values"], dtype=np.float32)
+        out_col = (q - q.min()) / max(np.ptp(q), 1e-6)   # niente sottocampionamento: argmax preciso
+        cols = [input_col] + hidden_cols + [out_col]
+        n_cols = len(cols)
 
-        x_positions = np.linspace(self.margin + 30, self.w - self.margin - 30, len(cols))
+        # gutter a sinistra per i nomi delle feature (solo se etichette allineate ai neuroni)
+        labels_aligned = (self.obs_labels is not None
+                          and len(input_col) == len(obs) == len(self.obs_labels))
+        label_gutter = 78 if labels_aligned else 0
+        x_positions = np.linspace(self.margin + 30 + label_gutter,
+                                  self.w - self.margin - 30, n_cols)
+
         argmax = rec["action"]
         for ci, (col, cx) in enumerate(zip(cols, x_positions)):
+            is_input, is_output = ci == 0, ci == n_cols - 1
             n = len(col)
-            ys = np.linspace(y0 + 8, y1 - 8, n)
-            r = int(np.clip((ys[1] - ys[0]) / 2 + 1, 3, 7)) if n > 1 else 6
-            for ui, (v, cy) in enumerate(zip(col, ys)):
-                cv2.circle(img, (int(cx), int(cy)), r, _color(float(v)), -1)
-                if ci == len(cols) - 1 and ui == argmax:
-                    cv2.circle(img, (int(cx), int(cy)), r + 3, _ACCENT, 2)
+            ys = np.linspace(top + 6, y1 - 6, n) if n > 1 else np.array([(top + y1) / 2])
+            r = int(np.clip((ys[1] - ys[0]) / 2 + 1, 2, 7)) if n > 1 else 6
+            for ui, (v, cyf) in enumerate(zip(col, ys)):
+                cyi = int(cyf)
+                cv2.circle(img, (int(cx), cyi), r, _color(float(v)), -1)
+                if is_input and labels_aligned:
+                    _put(img, self.obs_labels[ui], (self.margin + 2, cyi + 3), 0.3, _DIM)
+                if is_output and ui == argmax:
+                    cv2.circle(img, (int(cx), cyi), r + 3, _ACCENT, 2)
+                    lbl = self._act_label(argmax)
+                    if self.act_labels is not None:
+                        (tw, _), _ = cv2.getTextSize(lbl, _FONT, 0.3, 1)
+                        _put(img, lbl, (int(cx) - r - 4 - tw, cyi + 3), 0.3, _ACCENT)
 
     # -- API --
 
@@ -203,9 +317,12 @@ class PanelRenderer:
 
         self.q_history.append(record["q_values"])
 
-        self._draw_text(img, record)
+        self._draw_controller(img, record)
         self._draw_qplot(img, record)
-        self._draw_action_bars(img, record)
+        if self.act_layout is not None:
+            self._draw_action_grid(img, record)
+        else:
+            self._draw_action_bars(img, record)
         if record.get("activations") is not None:
             self._draw_net(img, record)
         return img
