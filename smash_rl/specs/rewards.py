@@ -122,3 +122,24 @@ def reward_v3(prev_gs, gs, ctx):
     return r
 
 
+W_ATTACK_4 = 0.0001
+
+@register_reward("v4")
+def reward_v4(prev_gs, gs, ctx):
+    """
+    Come v2 (danni/stock), più una penalità W_ATTACK_4 all'inizio di ogni attacco
+    dell'agente, per scoraggiare gli attacchi a vuoto.
+
+    L'inizio dell'attacco è rilevato come edge sull'animazione (attacca ora e non nel
+    frame precedente): la reward è chiamata su frame consecutivi, quindi la penalità
+    scatta una sola volta per attacco senza bisogno di stato globale.
+    """
+    r = reward_v2(prev_gs, gs, ctx)
+    if prev_gs is None or gs.frame < 0:   # nessuno stato precedente o countdown di inizio match
+        return r
+
+    me  = gs.players[ctx.agent_port]
+    pme = prev_gs.players[ctx.agent_port]
+    if _is_attacking(me) and not _is_attacking(pme):
+        r -= W_ATTACK_4
+    return r

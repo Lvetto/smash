@@ -179,9 +179,9 @@ def _get_full_obs_features(ctx):
 
 _FULL_OBS_NAMES = [
     # agente: pos, vel, %, stock, facing
-    "x ag", "y ag", "vx ag", "vy ag", "vx kb ag", "vy kb ag", "% ag", "stock ag", "facing ag",
+    "x ag", "y ag", "vx ag", "vy ag", "vx kb ag", "vy kb ag", r"% ag", "stock ag", "facing ag",
     # avversario: idem
-    "x av", "y av", "vx av", "vy av", "vx kb av", "vy kb av", "% av", "stock av", "facing av",
+    "x av", "y av", "vx av", "vy av", "vx kb av", "vy kb av", r"% av", "stock av", "facing av",
     # condivise
     "dx rel", "dy rel", "hitstun ag", "hitstun av", "salti ag", "salti av",
     "terra ag", "terra av", "fuori ag", "fuori av", "invuln ag", "invuln av",
