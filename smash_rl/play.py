@@ -132,7 +132,7 @@ def main(argv=None):
     config = MeleeConfig.for_play(human_pad_config=args.pad_config)
     session = MeleeSession(config=config,
                            players=[PlayerSpec(agent_char, cpu_level=0),
-                                    PlayerSpec(opponent_char, human=False, cpu_level=7)])
+                                    PlayerSpec(opponent_char, human=True, cpu_level=0)])
     ctx = Ctx(agent_port=1, opp_port=2, session=session)
     predict = lambda obs: model.predict(obs, deterministic=True)[0]
 

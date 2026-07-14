@@ -34,7 +34,10 @@ class MeleeEnv(gym.Env):
                 action_function="full",
                 reward_function="v1",
                 victory_bonus=2.0,
-                frame_skip=3,):
+                frame_skip=3,
+                max_reset_attempts=3,
+                reset_timeout_s=90.0,
+                advance_timeout_s=60.0,):
         
         self.spec_names = dict(obs=observation_function , act=action_function, reward=reward_function)  # per il logging
         self.observation_space, self._build  = OBS_SPECS[observation_function]
@@ -64,10 +67,13 @@ class MeleeEnv(gym.Env):
         self.frame_skip = frame_skip
         self.max_steps = int(7.5 * 60 * 60 / self.frame_skip)  # 7.5 min * 60fps / skip = numero di decisioni
 
-        # Per evitare blocchi in caso di processi appesi
-        self.max_reset_attempts = 3
-        self.reset_timeout_s = 90.0
-        self.advance_timeout_s = 60.0   # timeout della navigazione menu, DEVE essere < reset_timeout_s
+        # Per evitare blocchi in caso di processi appesi (configurabili: sotto forte
+        # pressione di memoria/swap la navigazione menu rallenta e conviene alzarli)
+        self.max_reset_attempts = max_reset_attempts
+        self.reset_timeout_s = reset_timeout_s
+        self.advance_timeout_s = advance_timeout_s   # timeout navigazione menu, DEVE essere < reset_timeout_s
+        assert self.advance_timeout_s < self.reset_timeout_s, \
+            "advance_timeout_s deve essere < reset_timeout_s (il watchdog di reset lo contiene)"
 
         # per multiprocessing
         self._booted_once = False
